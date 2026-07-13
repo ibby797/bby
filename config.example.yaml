@@ -1,0 +1,71 @@
+# t212bot configuration.
+# Copy to config.yaml (gitignored) and adjust. The API key belongs in the
+# T212_API_KEY environment variable, NOT in this file.
+
+# "demo" = Trading 212 paper-trading environment (recommended), "live" = real money.
+environment: demo
+
+# true = log every order instead of sending it. Set false only after you have
+# watched the bot's decisions and are happy with them.
+dry_run: true
+
+# Required ONLY for live trading with dry_run false. Type the phrase exactly:
+# confirm_live: I_UNDERSTAND_REAL_MONEY_IS_AT_RISK
+confirm_live: ""
+
+# Optional Discord/Slack-compatible webhook for trade notifications.
+webhook_url: ""
+
+state_path: state.json
+
+universe:
+  # Trading 212 ticker -> Yahoo Finance symbol.
+  # Find exact T212 tickers with: python run_bot.py instruments --search apple
+  instruments:
+    AAPL_US_EQ: AAPL
+    MSFT_US_EQ: MSFT
+    GOOGL_US_EQ: GOOGL
+    AMZN_US_EQ: AMZN
+    NVDA_US_EQ: NVDA
+    META_US_EQ: META
+    TSLA_US_EQ: TSLA
+    JPM_US_EQ: JPM
+    V_US_EQ: V
+    JNJ_US_EQ: JNJ
+
+strategy:
+  # Ensemble score in [-1, 1] required to open a position...
+  min_entry_score: 0.25
+  # ...and to force-close one.
+  exit_score: -0.25
+  # Relative weights of the five models. Trend/momentum carry full weight;
+  # mean-reversion gets half weight so it tempers entries without vetoing trends.
+  weights:
+    sma_crossover: 1.0
+    donchian_breakout: 1.0
+    macd_momentum: 1.0
+    rsi_reversion: 0.5
+    bollinger_reversion: 0.5
+
+data:
+  interval: 1d          # yfinance interval: 1d, 1h, 30m...
+  lookback_days: 400
+  cache_ttl_seconds: 300
+
+risk:
+  risk_per_trade_pct: 1.0          # % of equity risked between entry and stop
+  max_position_pct: 20.0           # max % of equity in one position
+  max_total_exposure_pct: 90.0
+  max_open_positions: 5
+  min_cash_buffer_pct: 5.0
+  atr_stop_multiplier: 2.5
+  atr_take_profit_multiplier: 5.0
+  trailing_stop: true
+  max_daily_loss_pct: 3.0          # halt new entries for the day
+  max_drawdown_pct: 15.0           # halt + liquidate everything
+  quantity_decimals: 4
+  reentry_cooldown_hours: 24       # no re-entry into a ticker after an exit
+
+schedule:
+  poll_seconds: 300
+  market_hours_only: true

@@ -1,0 +1,98 @@
+import numpy as np
+import pandas as pd
+import pytest
+
+from t212bot.backtest.engine import BacktestEngine, BacktestSettings
+from t212bot.backtest import metrics
+from t212bot.risk.manager import RiskConfig
+from t212bot.strategies import SmaCrossover, build_default_ensemble
+from tests.helpers import trending_down, trending_up, sideways
+
+
+def run_engine(data, **settings_kwargs):
+    engine = BacktestEngine(
+        strategy=build_default_ensemble(),
+        risk_config=RiskConfig(max_drawdown_pct=100.0),  # don't halt synthetic tests
+        settings=BacktestSettings(**settings_kwargs),
+    )
+    return engine.run(data)
+
+
+def test_backtest_produces_trades_and_equity():
+    result = run_engine({"UP": trending_up(400), "DOWN": trending_down(400), "FLAT": sideways(400)})
+    assert len(result.equity_curve) > 300
+    assert result.stats["trades"] == len(result.trades) > 0
+    assert result.stats["final_equity"] > 0
+    # final equity equals initial + sum of all trade pnl (cash accounting closes out)
+    assert result.stats["final_equity"] == pytest.approx(
+        10_000.0 + sum(t.pnl for t in result.trades), rel=1e-9
+    )
+
+
+def test_uptrend_beats_downtrend():
+    up = run_engine({"UP": trending_up(400)})
+    down = run_engine({"DOWN": trending_down(400)})
+    assert up.stats["final_equity"] > down.stats["final_equity"]
+    # long-only bot in a persistent downtrend should mostly stay out / lose little
+    assert down.stats["max_drawdown_pct"] < 20.0
+
+
+def test_no_lookahead_signal_is_shifted():
+    """The engine must act on yesterday's signal: a strategy that only fires on
+    the very last bar can never produce a trade."""
+
+    class LastBarOnly(SmaCrossover):
+        name = "last_bar_only"
+
+        def signal_series(self, df):
+            s = pd.Series(0.0, index=df.index)
+            s.iloc[-1] = 1.0
+            return s
+
+    engine = BacktestEngine(
+        strategy=LastBarOnly(),
+        risk_config=RiskConfig(max_drawdown_pct=100.0),
+        settings=BacktestSettings(),
+    )
+    result = engine.run({"X": trending_up(200)})
+    assert result.stats["trades"] == 0
+
+
+def test_stops_limit_losses_on_crash():
+    # A crash: stable then -60% collapse. The ATR stop must exit long before the bottom.
+    n = 300
+    closes = np.concatenate([np.full(150, 100.0), np.linspace(100, 40, n - 150)])
+    from tests.helpers import make_ohlcv
+
+    df = make_ohlcv(closes)
+    result = run_engine({"CRASH": df})
+    for t in result.trades:
+        loss_pct = (t.exit_price / t.entry_price - 1) * 100
+        assert loss_pct > -30  # stopped out, never rode it to -60%
+
+
+def test_fees_and_slippage_reduce_returns():
+    data = {"UP": trending_up(400)}
+    cheap = run_engine(data, slippage_bps=0.0, fee_bps=0.0)
+    costly = run_engine(data, slippage_bps=50.0, fee_bps=50.0)
+    assert cheap.stats["final_equity"] > costly.stats["final_equity"]
+
+
+def test_metrics_sane():
+    equity = pd.Series(
+        np.linspace(10_000, 12_000, 253),
+        index=pd.bdate_range("2023-01-02", periods=253),
+    )
+    assert metrics.total_return_pct(equity) == pytest.approx(20.0)
+    assert metrics.cagr_pct(equity) == pytest.approx(20.0, rel=0.05)
+    assert metrics.max_drawdown_pct(equity) == 0.0
+    assert metrics.sharpe_ratio(equity) > 0
+    stats = metrics.trade_stats([100.0, -50.0, 30.0, -20.0])
+    assert stats["trades"] == 4
+    assert stats["win_rate_pct"] == 50.0
+    assert stats["profit_factor"] == pytest.approx(130.0 / 70.0)
+
+
+def test_summary_contains_disclaimer():
+    result = run_engine({"UP": trending_up(300)})
+    assert "does not guarantee" in result.summary()
