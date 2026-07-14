@@ -1,0 +1,29 @@
+# Deploy ClipFarm to Fly.io:
+#   cd clipfarm
+#   fly launch --copy-config --no-deploy     # creates the app, keeps this file
+#   fly volumes create clipfarm_data --size 20
+#   fly secrets set CLIPFARM_PASSWORD=yourpassword
+#   fly deploy
+app = "clipfarm"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  CLIPFARM_DATA = "/data"
+
+[[mounts]]
+  source = "clipfarm_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = "off"    # keep the scheduler running for drip-posting
+  auto_start_machines = true
+  min_machines_running = 1
+
+[[vm]]
+  size = "shared-cpu-2x"
+  memory = "2gb"

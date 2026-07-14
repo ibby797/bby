@@ -1,0 +1,20 @@
+# Render.com Blueprint — deploys ClipFarm as a website.
+# In Render: New + → Blueprint → point at this repo. Set CLIPFARM_PASSWORD when prompted.
+services:
+  - type: web
+    name: clipfarm
+    runtime: docker
+    rootDir: clipfarm
+    dockerfilePath: ./Dockerfile
+    plan: standard        # video rendering needs a paid instance; free tier has no disk and sleeps
+    disk:
+      name: clipfarm-data
+      mountPath: /data
+      sizeGB: 20
+    envVars:
+      - key: CLIPFARM_DATA
+        value: /data
+      - key: CLIPFARM_PASSWORD
+        sync: false        # prompted at deploy time — protects your site
+      - key: ANTHROPIC_API_KEY
+        sync: false

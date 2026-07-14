@@ -24,6 +24,14 @@ class Settings:
     max_video_height: int = int(os.environ.get("CLIPFARM_MAX_HEIGHT", "1080"))
     caption_font: str = os.environ.get("CLIPFARM_FONT", "DejaVu Sans")
 
+    # Web hosting
+    # Set a password when exposing ClipFarm on the internet — the whole UI/API
+    # is then gated behind HTTP Basic auth (user: clipfarm).
+    password: str = os.environ.get("CLIPFARM_PASSWORD", "")
+    # Path to a Netscape-format cookies.txt exported from your browser.
+    # Needed on most cloud hosts: YouTube rate-limits datacenter IPs.
+    cookies_file: str = os.environ.get("CLIPFARM_COOKIES", "")
+
     # Analysis
     min_clip_seconds: float = float(os.environ.get("CLIPFARM_MIN_CLIP", "12"))
     max_clip_seconds: float = float(os.environ.get("CLIPFARM_MAX_CLIP", "58"))

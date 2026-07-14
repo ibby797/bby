@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sys
 
 
@@ -16,8 +17,8 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command")
 
     serve = sub.add_parser("serve", help="run the web app")
-    serve.add_argument("--host", default="127.0.0.1")
-    serve.add_argument("--port", type=int, default=8000)
+    serve.add_argument("--host", default=os.environ.get("HOST", "127.0.0.1"))
+    serve.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8000")))
 
     auto = sub.add_parser("autopilot", help="analyze a video, render top clips, queue them")
     auto.add_argument("url")

@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
+import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -35,6 +37,23 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="ClipFarm", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def basic_auth(request: Request, call_next):
+    """When CLIPFARM_PASSWORD is set (hosted deployments), gate everything
+    behind HTTP Basic auth — username `clipfarm`, password from the env."""
+    if settings.password:
+        expected = "Basic " + base64.b64encode(
+            f"clipfarm:{settings.password}".encode()
+        ).decode()
+        supplied = request.headers.get("authorization", "")
+        if not secrets.compare_digest(supplied.encode(), expected.encode()):
+            return Response(
+                status_code=401,
+                headers={"WWW-Authenticate": 'Basic realm="ClipFarm"'},
+            )
+    return await call_next(request)
 
 
 # ------------------------------------------------------------- request models

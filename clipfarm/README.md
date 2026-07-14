@@ -80,6 +80,41 @@ Videos without captions: install `faster-whisper` for local
 transcription, otherwise ClipFarm falls back to audio-energy-only
 moment detection.
 
+## Deploy as a website (hosted)
+
+ClipFarm ships with a Docker image (ffmpeg included) and is ready for any
+host. **Always set `CLIPFARM_PASSWORD`** when exposing it to the internet —
+the entire UI/API is then gated behind a login prompt (username `clipfarm`).
+
+**Option A — any VPS (Hetzner/DigitalOcean/etc., ~$5–10/mo, most reliable):**
+
+```bash
+git clone https://github.com/ibby797/bby.git && cd bby/clipfarm
+CLIPFARM_PASSWORD=yourpassword docker compose up -d --build
+# → website live at http://your-server-ip:8000
+```
+
+Put Caddy or nginx in front for HTTPS + a domain.
+
+**Option B — Render.com:** New + → *Blueprint* → select this repo. The
+root-level `render.yaml` builds ClipFarm with a persistent disk; you'll be
+prompted for `CLIPFARM_PASSWORD`. Needs a paid instance (video rendering
+requires disk + no sleep).
+
+**Option C — Fly.io:** see the comments in [`fly.toml`](fly.toml) — four
+commands and you're live with a volume and HTTPS.
+
+**Cloud caveat — YouTube bot detection:** YouTube often rate-limits or
+blocks downloads from datacenter IPs. If downloads fail on your host,
+export your browser's YouTube cookies to a `cookies.txt` (any
+"cookies.txt" browser extension) and set `CLIPFARM_COOKIES=/data/cookies.txt`
+(mount the file there). Running on a home server/VPS with a residential
+IP avoids this entirely.
+
+For hosted TikTok posting set
+`TIKTOK_REDIRECT_URI=https://your-domain.com/api/tiktok/callback` and add
+the same URL in your TikTok developer app settings.
+
 ## TikTok automation — read this
 
 ClipFarm uses TikTok's **official Content Posting API**, the only

@@ -40,6 +40,8 @@ def download(url: str, dest_dir: Path, progress_hook=None) -> VideoInfo:
         "no_warnings": True,
         "retries": 3,
     }
+    if settings.cookies_file and Path(settings.cookies_file).exists():
+        opts["cookiefile"] = settings.cookies_file
     if progress_hook:
         opts["progress_hooks"] = [progress_hook]
 
