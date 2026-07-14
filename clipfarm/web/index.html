@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ClipFarm — viral clip factory</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>🎬 ClipFarm</h1>
+  <p class="tag">Long-form in → 100 viral clips out → auto-posted for content rewards</p>
+  <div id="status-badges"></div>
+</header>
+
+<main>
+  <!-- STEP 1: input -->
+  <section class="card">
+    <h2>1 · Analyze a video</h2>
+    <div class="row">
+      <input id="url-input" type="url" placeholder="Paste a YouTube URL (podcast, stream VOD, interview…)">
+      <button id="analyze-btn" class="primary">Find viral moments</button>
+      <button id="autopilot-btn" class="accent" title="Analyze + render top clips + queue for posting, one click">⚡ Autopilot (100 clips)</button>
+    </div>
+    <div class="row options">
+      <label>Clips <input id="clip-count" type="number" min="1" max="100" value="100"></label>
+      <label>Format
+        <select id="render-mode">
+          <option value="blur">9:16 blurred background</option>
+          <option value="crop">9:16 center crop</option>
+        </select>
+      </label>
+      <label>Watermark <input id="watermark" type="text" placeholder="@yourhandle"></label>
+    </div>
+    <div id="job-progress" class="progress hidden"></div>
+  </section>
+
+  <!-- STEP 2: moments -->
+  <section class="card hidden" id="moments-card">
+    <h2>2 · Viral moments <span id="moments-count" class="pill"></span></h2>
+    <div class="row">
+      <button id="render-top-btn" class="primary">Render selected</button>
+      <button id="select-all-btn">Select all</button>
+      <button id="select-none-btn">Select none</button>
+    </div>
+    <div id="moments-list"></div>
+  </section>
+
+  <!-- STEP 3: clips -->
+  <section class="card hidden" id="clips-card">
+    <h2>3 · Rendered clips <span id="clips-count" class="pill"></span></h2>
+    <div class="row">
+      <button id="queue-all-btn" class="accent">Queue all for TikTok</button>
+      <button id="manifest-btn">Export rewards manifest (CSV)</button>
+    </div>
+    <div id="clips-list" class="clip-grid"></div>
+  </section>
+
+  <!-- STEP 4: automation -->
+  <section class="card" id="automation-card">
+    <h2>4 · Automation queue</h2>
+    <div class="row">
+      <span id="queue-status" class="pill"></span>
+      <button id="queue-toggle-btn">Pause / resume</button>
+      <a id="tiktok-connect" class="btn" href="/api/tiktok/connect">Connect TikTok</a>
+    </div>
+    <p class="hint" id="tiktok-hint"></p>
+    <table id="queue-table">
+      <thead><tr><th>Clip</th><th>Caption</th><th>Scheduled</th><th>Status</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <!-- campaign settings -->
+  <section class="card" id="campaign-card">
+    <h2>⚙ Content-rewards campaign</h2>
+    <div class="row options">
+      <label>Name <input id="c-name" value="default"></label>
+      <label>$/1k views <input id="c-rate" type="number" step="0.1" value="1.0"></label>
+      <label>Min clip s <input id="c-min" type="number" value="10"></label>
+      <label>Max clip s <input id="c-max" type="number" value="60"></label>
+    </div>
+    <div class="row options">
+      <label class="wide">Caption template <input id="c-caption" value="{hook} #fyp #viral"></label>
+      <label>Required @mention <input id="c-mention" placeholder="@brand"></label>
+      <button id="campaign-save-btn">Save campaign</button>
+    </div>
+  </section>
+
+  <!-- previous jobs -->
+  <section class="card">
+    <h2>History</h2>
+    <div id="jobs-list"></div>
+  </section>
+</main>
+
+<footer>
+  <p>ClipFarm renders locally with ffmpeg. TikTok posting uses the official Content Posting API —
+     unaudited developer apps are limited by TikTok to draft/private posts until audited.
+     Only clip content you have rights to (campaign source videos grant this).</p>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>
