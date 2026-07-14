@@ -96,21 +96,37 @@ class RiskManager:
         return max(qty, 0.0)
 
     # ------------------------------------------------------------ exits
+    #
+    # ``direction`` is +1 for long, -1 for short. Shorts mirror everything:
+    # the stop sits ABOVE entry, the take-profit BELOW, and the trailing stop
+    # ratchets downward as price falls.
 
-    def stop_loss_price(self, entry_price: float, atr_value: float) -> float:
-        return entry_price - self.config.atr_stop_multiplier * atr_value
+    def stop_loss_price(
+        self, entry_price: float, atr_value: float, direction: int = 1
+    ) -> float:
+        return entry_price - direction * self.config.atr_stop_multiplier * atr_value
 
-    def take_profit_price(self, entry_price: float, atr_value: float) -> float:
-        return entry_price + self.config.atr_take_profit_multiplier * atr_value
+    def take_profit_price(
+        self, entry_price: float, atr_value: float, direction: int = 1
+    ) -> float:
+        return entry_price + direction * self.config.atr_take_profit_multiplier * atr_value
 
     def updated_trailing_stop(
-        self, current_stop: float, highest_close: float, atr_value: float
+        self,
+        current_stop: float,
+        extreme_close: float,
+        atr_value: float,
+        direction: int = 1,
     ) -> float:
-        """Trailing stop ratchets upward only."""
+        """Trailing stop only ever ratchets in the position's favor.
+
+        ``extreme_close`` is the highest close since entry for longs, the
+        lowest close since entry for shorts.
+        """
         if not self.config.trailing_stop:
             return current_stop
-        candidate = highest_close - self.config.atr_stop_multiplier * atr_value
-        return max(current_stop, candidate)
+        candidate = extreme_close - direction * self.config.atr_stop_multiplier * atr_value
+        return max(current_stop, candidate) if direction > 0 else min(current_stop, candidate)
 
     # ------------------------------------------------------ kill switches
 

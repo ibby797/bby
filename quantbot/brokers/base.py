@@ -30,14 +30,15 @@ class AccountSnapshot:
 @dataclass
 class BrokerPosition:
     symbol: str
-    quantity: float
+    quantity: float          # negative quantity = short position
     average_price: float
     current_price: float | None = None
 
 
 class Broker(ABC):
     name: str = "broker"
-    real_money: bool = False  # adapters set True when orders move real funds
+    real_money: bool = False    # adapters set True when orders move real funds
+    supports_short: bool = False  # True where sell-first (short selling) works
 
     @abstractmethod
     def account(self) -> AccountSnapshot:
@@ -53,4 +54,8 @@ class Broker(ABC):
 
     @abstractmethod
     def sell_market(self, symbol: str, quantity: float) -> dict:
-        """Market-sell ``quantity`` (positive number) of ``symbol``."""
+        """Market-sell ``quantity`` (positive number) of ``symbol``.
+
+        On venues with ``supports_short = True``, selling more than is held
+        opens/extends a short position. Long-only venues reject or clamp it.
+        """

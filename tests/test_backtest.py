@@ -126,6 +126,58 @@ def test_regime_filter_on_equals_no_filter():
     )
 
 
+def test_shorts_profit_in_downtrend():
+    data = {"DOWN": trending_down(400)}
+    long_only = run_engine(data)
+    engine = BacktestEngine(
+        strategy=build_default_ensemble(),
+        risk_config=RiskConfig(max_drawdown_pct=100.0),
+        settings=BacktestSettings(allow_short=True),
+    )
+    with_shorts = engine.run(data)
+    short_trades = [t for t in with_shorts.trades if t.direction < 0]
+    assert long_only.stats["trades"] == 0        # long-only sits out a downtrend
+    assert len(short_trades) > 0                 # shorts engage it
+    assert with_shorts.stats["final_equity"] > 10_000.0  # and profit from it
+    # accounting invariant still holds with shorts in the mix
+    assert with_shorts.stats["final_equity"] == pytest.approx(
+        10_000.0 + sum(t.pnl for t in with_shorts.trades), rel=1e-9
+    )
+
+
+def test_short_stop_limits_losses_in_rally():
+    # a short trapped in a melt-up must get stopped out, not ride it to ruin
+    n = 300
+    closes = np.concatenate([np.linspace(100, 70, 150), np.linspace(70, 200, n - 150)])
+    from tests.helpers import make_ohlcv
+
+    df = make_ohlcv(closes)
+    engine = BacktestEngine(
+        strategy=build_default_ensemble(),
+        risk_config=RiskConfig(max_drawdown_pct=100.0),
+        settings=BacktestSettings(allow_short=True),
+    )
+    result = engine.run({"TRAP": df})
+    for t in result.trades:
+        if t.direction < 0:
+            loss_pct = (t.entry_price / t.exit_price - 1) * 100
+            assert loss_pct > -30  # stopped, never rode a +100% rally short
+
+
+def test_regime_gates_direction():
+    # risk-off regime: longs blocked but shorts allowed
+    data = {"DOWN": trending_down(400)}
+    regime = pd.Series(False, index=data["DOWN"].index)
+    engine = BacktestEngine(
+        strategy=build_default_ensemble(),
+        risk_config=RiskConfig(max_drawdown_pct=100.0),
+        settings=BacktestSettings(allow_short=True),
+    )
+    result = engine.run(data, regime_ok=regime)
+    assert all(t.direction < 0 for t in result.trades)
+    assert len(result.trades) > 0
+
+
 def test_html_report_renders(tmp_path):
     from quantbot.backtest.report import render_html, write_report
 

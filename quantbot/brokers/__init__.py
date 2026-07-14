@@ -40,6 +40,7 @@ def build_broker(config: "Config", price_lookup: PriceLookup | None = None) -> B
             price_lookup=price_lookup,
             initial_cash=config.broker.paper_initial_cash,
             ledger_path=config.broker.paper_ledger_path,
+            allow_short=config.strategy.allow_short,
         )
     if kind == "alpaca":
         from .alpaca import AlpacaBroker

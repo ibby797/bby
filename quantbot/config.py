@@ -59,8 +59,12 @@ class BrokerConfig:
 
 @dataclass
 class StrategyConfig:
-    min_entry_score: float = 0.25   # ensemble score needed to open
-    exit_score: float = -0.25       # ensemble score that forces an exit
+    min_entry_score: float = 0.25   # ensemble score needed to open a long
+    exit_score: float = -0.25       # ensemble score that forces a long exit
+    # Short selling: score <= -min_entry_score opens a short, score >=
+    # -exit_score covers it. Only honored on brokers that support shorting
+    # (Alpaca, paper) — long-only venues (Trading 212, spot crypto) ignore it.
+    allow_short: bool = False
     weights: dict = field(default_factory=dict)  # per-strategy weight overrides
 
 
@@ -145,6 +149,7 @@ class Config:
         cfg.strategy = StrategyConfig(
             min_entry_score=float(strat.get("min_entry_score", 0.25)),
             exit_score=float(strat.get("exit_score", -0.25)),
+            allow_short=bool(strat.get("allow_short", False)),
             weights={str(k): float(v) for k, v in (strat.get("weights") or {}).items()},
         )
 

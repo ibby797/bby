@@ -141,7 +141,11 @@ class TradingBot:
         self._manage_exits(portfolio, force_liquidate=ks.liquidate)
 
         if not self.state.halted and not ks.halted:
-            self._scan_entries(equity, free_cash)
+            exposure_value = sum(
+                abs(p.quantity) * (p.current_price or p.average_price or 0.0)
+                for p in portfolio.values()
+            )
+            self._scan_entries(equity, free_cash, exposure_value)
 
         save_state(self.state, self.config.state_path)
 
@@ -156,6 +160,7 @@ class TradingBot:
                 del self.state.positions[symbol]
 
         # Adopt broker positions the bot doesn't know (manual buys, restarts).
+        # Negative broker quantity = an externally opened short.
         for symbol, pos in portfolio.items():
             if symbol in self.state.positions or symbol not in self.config.instruments:
                 continue
@@ -163,29 +168,38 @@ class TradingBot:
             df = self.data.history(data_symbol)
             if len(df) < MIN_BARS:
                 continue
+            direction = 1 if pos.quantity >= 0 else -1
             atr_val = float(atr_indicator(df).iloc[-1])
             entry = pos.average_price or float(df["Close"].iloc[-1])
             self.state.positions[symbol] = ManagedPosition(
                 ticker=symbol,
                 yahoo_symbol=data_symbol,
-                quantity=pos.quantity,
+                quantity=abs(pos.quantity),
                 entry_price=entry,
                 entry_time=dt.datetime.now(dt.timezone.utc).isoformat(),
-                stop_price=self.risk.stop_loss_price(entry, atr_val),
-                take_profit_price=self.risk.take_profit_price(entry, atr_val),
+                stop_price=self.risk.stop_loss_price(entry, atr_val, direction),
+                take_profit_price=self.risk.take_profit_price(entry, atr_val, direction),
                 highest_close=float(df["Close"].iloc[-1]),
                 atr_at_entry=atr_val,
+                direction=direction,
             )
-            log.info("adopted external position %s with software stop %.2f",
-                     symbol, self.state.positions[symbol].stop_price)
+            log.info("adopted external %s position %s with software stop %.2f",
+                     "short" if direction < 0 else "long", symbol,
+                     self.state.positions[symbol].stop_price)
 
-        # Keep quantities in sync (partial manual sells etc.).
-        for symbol, mp in self.state.positions.items():
+        # Keep quantities in sync (partial manual sells etc.). If the sign
+        # flipped externally, drop it — it gets re-adopted correctly next pass.
+        for symbol in list(self.state.positions):
+            mp = self.state.positions[symbol]
             broker_pos = portfolio.get(symbol)
-            if broker_pos and broker_pos.quantity > 0 and abs(
-                broker_pos.quantity - mp.quantity
-            ) > 1e-9:
-                mp.quantity = broker_pos.quantity
+            if broker_pos is None or abs(broker_pos.quantity) <= 1e-12:
+                continue
+            if (1 if broker_pos.quantity >= 0 else -1) != mp.direction:
+                log.warning("position %s flipped direction outside the bot — resyncing", symbol)
+                del self.state.positions[symbol]
+                continue
+            if abs(abs(broker_pos.quantity) - mp.quantity) > 1e-9:
+                mp.quantity = abs(broker_pos.quantity)
 
     def _roll_daily_ledger(self, equity: float) -> None:
         today = dt.date.today().isoformat()
@@ -203,6 +217,7 @@ class TradingBot:
     ) -> None:
         for symbol in list(self.state.positions):
             mp = self.state.positions[symbol]
+            d = mp.direction
             df = self.data.history(mp.yahoo_symbol)
             if df.empty:
                 continue
@@ -211,23 +226,30 @@ class TradingBot:
             reason = None
             if force_liquidate:
                 reason = "drawdown kill switch liquidation"
-            elif price <= mp.stop_price:
-                reason = f"stop-loss hit ({price:.2f} <= {mp.stop_price:.2f})"
-            elif price >= mp.take_profit_price:
-                reason = f"take-profit hit ({price:.2f} >= {mp.take_profit_price:.2f})"
+            elif (price - mp.stop_price) * d <= 0:  # long: price<=stop, short: price>=stop
+                reason = f"stop-loss hit (price {price:.2f} vs stop {mp.stop_price:.2f})"
+            elif (price - mp.take_profit_price) * d >= 0:
+                reason = f"take-profit hit (price {price:.2f} vs tp {mp.take_profit_price:.2f})"
             else:
                 sig = self.strategy.generate(df)
-                if sig.score <= self.config.strategy.exit_score:
+                # long closes on a sell signal; short covers on a buy signal
+                if d > 0 and sig.score <= self.config.strategy.exit_score:
                     reason = f"sell signal ({sig.reason})"
+                elif d < 0 and sig.score >= -self.config.strategy.exit_score:
+                    reason = f"cover signal ({sig.reason})"
 
             if reason:
                 broker_pos = portfolio.get(symbol)
-                qty = broker_pos.quantity if broker_pos else mp.quantity
-                result = self.executor.sell_market(symbol, qty)
+                qty = abs(broker_pos.quantity) if broker_pos else mp.quantity
+                if d > 0:
+                    result = self.executor.sell_market(symbol, qty)
+                else:
+                    result = self.executor.buy_market(symbol, qty)  # cover short
                 if result is not None:
-                    pnl_pct = (price / mp.entry_price - 1.0) * 100.0
+                    pnl_pct = d * (price / mp.entry_price - 1.0) * 100.0
+                    side = "EXIT" if d > 0 else "COVER"
                     self.notifier.send(
-                        f"EXIT {symbol} x{qty:g} @ ~{price:.2f} ({pnl_pct:+.2f}%) — {reason}"
+                        f"{side} {symbol} x{qty:g} @ ~{price:.2f} ({pnl_pct:+.2f}%) — {reason}"
                     )
                     del self.state.positions[symbol]
                     self.state.cooldowns[symbol] = dt.datetime.now(
@@ -235,12 +257,15 @@ class TradingBot:
                     ).isoformat()
                 continue
 
-            # trailing stop maintenance
-            mp.highest_close = max(mp.highest_close, price)
-            new_stop = self.risk.updated_trailing_stop(
-                mp.stop_price, mp.highest_close, mp.atr_at_entry
+            # trailing stop maintenance (extreme = highest close for longs,
+            # lowest close for shorts; stop only ever moves in our favor)
+            mp.highest_close = (
+                max(mp.highest_close, price) if d > 0 else min(mp.highest_close, price)
             )
-            if new_stop > mp.stop_price:
+            new_stop = self.risk.updated_trailing_stop(
+                mp.stop_price, mp.highest_close, mp.atr_at_entry, d
+            )
+            if new_stop != mp.stop_price:
                 log.info("%s trailing stop %.2f -> %.2f", symbol, mp.stop_price, new_stop)
                 mp.stop_price = new_stop
 
@@ -256,34 +281,63 @@ class TradingBot:
             return False
         return True
 
-    def regime_allows_entries(self) -> tuple[bool, str]:
-        """Benchmark-above-its-SMA regime filter. Fails open on missing data:
-        a data outage should not silently change strategy behavior — capital
-        protection is the kill switches' job."""
+    def regime_state(self) -> str:
+        """'on' (benchmark above its SMA), 'off' (below), 'unknown' (no data),
+        or 'disabled'. Fails open on missing data: a data outage should not
+        silently change strategy behavior — capital protection is the kill
+        switches' job."""
         r = self.config.regime
         if not r.enabled:
-            return True, "regime filter disabled"
+            return "disabled"
         df = self.data.history(r.symbol)
         if len(df) < r.sma_window:
-            log.warning("regime filter: not enough %s data (%d bars) — allowing entries",
+            log.warning("regime filter: not enough %s data (%d bars) — fail-open",
                         r.symbol, len(df))
-            return True, "insufficient regime data (fail-open)"
+            return "unknown"
         benchmark_sma = float(sma(df["Close"], r.sma_window).iloc[-1])
         price = float(df["Close"].iloc[-1])
-        if price < benchmark_sma:
-            return False, (
-                f"risk-off: {r.symbol} {price:.2f} < SMA{r.sma_window} {benchmark_sma:.2f}"
-            )
-        return True, f"risk-on: {r.symbol} above SMA{r.sma_window}"
+        return "on" if price >= benchmark_sma else "off"
 
-    def _scan_entries(self, equity: float, free_cash: float) -> None:
-        allowed, regime_reason = self.regime_allows_entries()
-        if not allowed:
-            log.info("entries blocked — %s", regime_reason)
+    def regime_allows_entries(self) -> tuple[bool, str]:
+        """Long-entry gate (kept for compatibility with regime_state)."""
+        state = self.regime_state()
+        r = self.config.regime
+        if state == "off":
+            return False, f"risk-off: {r.symbol} below SMA{r.sma_window}"
+        if state == "unknown":
+            return True, "insufficient regime data (fail-open)"
+        return True, f"regime {state}"
+
+    def _direction_gates(self) -> tuple[bool, bool, str]:
+        """(longs_allowed, shorts_allowed, reason).
+
+        Longs need a risk-on (or unknown/disabled) regime. Shorts need
+        allow_short config + a broker that can short, and are blocked in
+        risk-on regimes — shorting a market above its long-term average is a
+        losing proposition often enough that the filter enforces alignment.
+        """
+        state = self.regime_state()
+        longs = state in ("on", "unknown", "disabled")
+        shorts_capable = (
+            self.config.strategy.allow_short and self.broker.supports_short
+        )
+        shorts = shorts_capable and state in ("off", "unknown", "disabled")
+        if self.config.strategy.allow_short and not self.broker.supports_short:
+            log.info("allow_short is set but broker %s cannot short — longs only",
+                     self.broker.name)
+        return longs, shorts, f"regime={state}"
+
+    def _scan_entries(
+        self, equity: float, free_cash: float, exposure_value: float
+    ) -> None:
+        longs_ok, shorts_ok, gate_reason = self._direction_gates()
+        if not longs_ok and not shorts_ok:
+            log.info("entries blocked — %s", gate_reason)
             return
 
+        min_score = self.config.strategy.min_entry_score
         now = dt.datetime.now(dt.timezone.utc)
-        candidates: list[tuple[float, str, str]] = []
+        candidates: list[tuple[float, float, str, str, int]] = []
         for symbol, data_symbol in self.config.instruments.items():
             if symbol in self.state.positions:
                 continue
@@ -294,14 +348,18 @@ class TradingBot:
             if len(df) < MIN_BARS:
                 continue
             sig = self.strategy.generate(df)
-            if sig.score >= self.config.strategy.min_entry_score:
-                candidates.append((sig.score, symbol, data_symbol))
-                log.info("candidate %s score=%.2f", symbol, sig.score)
+            if longs_ok and sig.score >= min_score:
+                candidates.append((abs(sig.score), sig.score, symbol, data_symbol, 1))
+                log.info("long candidate %s score=%.2f", symbol, sig.score)
+            elif shorts_ok and sig.score <= -min_score:
+                candidates.append((abs(sig.score), sig.score, symbol, data_symbol, -1))
+                log.info("short candidate %s score=%.2f", symbol, sig.score)
         candidates.sort(reverse=True)
 
-        for score, symbol, data_symbol in candidates:
-            exposure = max(equity - free_cash, 0.0)
-            ok, why = self.risk.can_open_new(len(self.state.positions), exposure, equity)
+        for _, score, symbol, data_symbol, direction in candidates:
+            ok, why = self.risk.can_open_new(
+                len(self.state.positions), exposure_value, equity
+            )
             if not ok:
                 log.info("entry gate closed: %s", why)
                 break
@@ -314,11 +372,14 @@ class TradingBot:
                 log.info("no valid size for %s (price=%.2f atr=%.2f)", symbol, price, atr_val)
                 continue
 
-            result = self.executor.buy_market(symbol, qty)
+            if direction > 0:
+                result = self.executor.buy_market(symbol, qty)
+            else:
+                result = self.executor.sell_market(symbol, qty)  # open short
             if result is None:
                 continue
-            stop = self.risk.stop_loss_price(price, atr_val)
-            tp = self.risk.take_profit_price(price, atr_val)
+            stop = self.risk.stop_loss_price(price, atr_val, direction)
+            tp = self.risk.take_profit_price(price, atr_val, direction)
             self.state.positions[symbol] = ManagedPosition(
                 ticker=symbol,
                 yahoo_symbol=data_symbol,
@@ -329,9 +390,13 @@ class TradingBot:
                 take_profit_price=tp,
                 highest_close=price,
                 atr_at_entry=atr_val,
+                direction=direction,
             )
+            # both directions consume buying power / collateral
             free_cash -= qty * price
+            exposure_value += qty * price
+            side = "ENTRY" if direction > 0 else "SHORT"
             self.notifier.send(
-                f"ENTRY {symbol} x{qty:g} @ ~{price:.2f} score={score:.2f} "
+                f"{side} {symbol} x{qty:g} @ ~{price:.2f} score={score:.2f} "
                 f"stop={stop:.2f} tp={tp:.2f}"
             )

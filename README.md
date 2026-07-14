@@ -74,6 +74,27 @@ force-close. Blending opposing styles is deliberate: reversion tempers buying
 into stretched prices, trend keeps the bot out of falling knives, volume
 confirms or vetoes.
 
+### Short selling (`allow_short: true`)
+
+The bot can sell first and buy back later, profiting from falling prices —
+**on venues that support it**: Alpaca (marginable US equities) and the built-in
+paper broker. **Trading 212's Invest/ISA API is long-only** (its CFD product
+isn't in the public API), and spot crypto can't short either; on those venues
+the flag is ignored and the bot stays long-only.
+
+Everything mirrors: shorts open when the ensemble score is strongly *negative*
+(`score <= -min_entry_score`), the stop-loss sits *above* entry, the
+take-profit *below*, the trailing stop ratchets *down*, and a buy signal
+covers the short. With the regime filter on, direction must align with the
+market: longs only while the benchmark is above its 200-day average, shorts
+only while it's below. The backtester models shorts fully collateralized
+(notional reserved from cash) with the same mirrored exits.
+
+**Warning:** a long can lose at most 100%; a short's loss is theoretically
+unlimited as price rises. The ATR stop and position sizing bound this in
+practice, but gaps ignore stops. Leave `allow_short: false` unless you
+understand and accept that.
+
 ### Risk management (the important part)
 
 - **Volatility-adjusted sizing** — each trade risks a fixed % of equity to its
@@ -212,15 +233,19 @@ a fantasy.
 ## Tests & CI
 
 ```bash
-python -m pytest tests/ -q     # 80 tests
+python -m pytest tests/ -q     # 92 tests
 ```
 
 Covers indicators, every model's behavior in up/down/sideways markets, sizing
 math, kill switches, backtest accounting (final equity must equal initial cash
-plus the sum of all trade PnL), a no-lookahead guard, regime-filter on/off
-equivalence, the paper broker's ledger, the real-money confirmation gates for
-every broker, HTML report rendering, and full bot cycles against a fake broker.
-GitHub Actions runs the suite and builds the `.pyz` bundle on every push.
+plus the sum of all trade PnL — shorts included), a no-lookahead guard,
+regime-filter on/off equivalence and direction gating, mirrored short stops
+and trailing stops, short-trapped-in-a-rally loss bounding, the paper broker's
+ledger and short collateral, the real-money confirmation gates for every
+broker, HTML report rendering, and full bot cycles against a fake broker —
+including short entry, cover-on-stop, and refusing to short on long-only
+venues. GitHub Actions runs the suite and builds the `.pyz` bundle on every
+push.
 
 ## Known limitations — read before going live
 
@@ -231,8 +256,10 @@ GitHub Actions runs the suite and builds the `.pyz` bundle on every push.
   public REST APIs.
 - **Yahoo data is unofficial** and occasionally wrong or late. The bot fails
   safe (skips instruments without data), but garbage in, garbage out.
-- **Long-only, no leverage.** In a bear market the correct output is mostly
-  *cash* — the regime filter enforces exactly that.
+- **No leverage; shorting only where the venue allows it** (Alpaca, paper).
+  On long-only venues the correct bear-market output is mostly *cash* — the
+  regime filter enforces exactly that. Short losses are theoretically
+  unbounded; the stop and sizing cap them in practice but gaps ignore stops.
 - **CCXT spot accounts have no entry-price memory**; adopted crypto positions
   use the current price as a stand-in average.
 - FX/spread costs are approximated in backtests via `fee_bps`, not modeled

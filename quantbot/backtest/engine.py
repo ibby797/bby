@@ -33,6 +33,11 @@ class BacktestSettings:
     exit_score: float = -0.25
     atr_period: int = 14
     reentry_cooldown_bars: int = 2  # mirrors the live bot's whipsaw guard
+    # Short selling: score <= -min_entry_score opens a short (fully
+    # collateralized: the short's notional is reserved from cash, like the
+    # live bot's buying-power accounting). With a regime series provided,
+    # shorts only open on risk-off dates — mirroring the live direction gates.
+    allow_short: bool = False
 
 
 @dataclass
@@ -45,18 +50,20 @@ class Trade:
     quantity: float
     pnl: float
     exit_reason: str
+    direction: int = 1  # +1 long, -1 short
 
 
 @dataclass
 class _OpenPosition:
     quantity: float
     entry_price: float
-    entry_cost: float  # cash actually paid, including fees
+    entry_cost: float  # cash actually reserved, including fees
     entry_date: pd.Timestamp
     stop: float
     take_profit: float
-    highest_close: float
+    extreme_close: float  # highest close for longs, lowest for shorts
     atr_at_entry: float
+    direction: int = 1
 
 
 @dataclass
@@ -150,13 +157,21 @@ class BacktestEngine:
         trades: list[Trade] = []
         equity_points: list[tuple[pd.Timestamp, float]] = []
 
+        def mark_value(pos: _OpenPosition, price: float) -> float:
+            """Cash a position would return at ``price``: entry collateral
+            plus direction-signed price move. Long reduces to qty*price."""
+            entry_value = pos.entry_price * pos.quantity
+            return entry_value + pos.direction * (price * pos.quantity - entry_value)
+
         def close_position(symbol: str, date: pd.Timestamp, price: float, reason: str):
             nonlocal cash
             pos = open_positions.pop(symbol)
             last_exit_bar[symbol] = bar_i
-            fill = price * (1.0 - slip)
-            proceeds = fill * pos.quantity * (1.0 - fee)
-            cash += proceeds
+            # slippage moves against you: sell (long exit) lower, buy-to-cover higher
+            fill = price * (1.0 - pos.direction * slip)
+            exit_fee = fill * pos.quantity * fee
+            returned = mark_value(pos, fill) - exit_fee
+            cash += returned
             trades.append(
                 Trade(
                     symbol=symbol,
@@ -165,8 +180,9 @@ class BacktestEngine:
                     entry_price=pos.entry_price,
                     exit_price=fill,
                     quantity=pos.quantity,
-                    pnl=proceeds - pos.entry_cost,
+                    pnl=returned - pos.entry_cost,
                     exit_reason=reason,
+                    direction=pos.direction,
                 )
             )
 
@@ -183,49 +199,56 @@ class BacktestEngine:
                     continue
                 bar = bars[symbol]
                 pos = open_positions[symbol]
+                d = pos.direction
                 open_px, low, high, close = (
                     float(bar["Open"]), float(bar["Low"]),
                     float(bar["High"]), float(bar["Close"]),
                 )
-                if open_px <= pos.stop:  # gapped through the stop overnight
+                # adverse extreme pierces the stop (long: low; short: high)
+                if (open_px - pos.stop) * d <= 0:  # gapped through overnight
                     close_position(symbol, date, open_px, "stop_gap")
                     continue
-                if low <= pos.stop:
+                if ((low if d > 0 else high) - pos.stop) * d <= 0:
                     close_position(symbol, date, pos.stop, "stop_loss")
                     continue
-                if high >= pos.take_profit:
-                    fill = max(open_px, pos.take_profit)
+                # favorable extreme reaches take-profit (long: high; short: low)
+                if ((high if d > 0 else low) - pos.take_profit) * d >= 0:
+                    fill = max(open_px, pos.take_profit) if d > 0 else min(open_px, pos.take_profit)
                     close_position(symbol, date, fill, "take_profit")
                     continue
                 sig = bar["signal"]
-                if not np.isnan(sig) and sig <= st.exit_score:
-                    close_position(symbol, date, open_px, "signal_exit")
-                    continue
+                if not np.isnan(sig):
+                    if d > 0 and sig <= st.exit_score:
+                        close_position(symbol, date, open_px, "signal_exit")
+                        continue
+                    if d < 0 and sig >= -st.exit_score:
+                        close_position(symbol, date, open_px, "signal_cover")
+                        continue
                 # trailing stop update from today's close
-                pos.highest_close = max(pos.highest_close, close)
+                pos.extreme_close = (
+                    max(pos.extreme_close, close) if d > 0 else min(pos.extreme_close, close)
+                )
                 pos.stop = self.risk.updated_trailing_stop(
-                    pos.stop, pos.highest_close, pos.atr_at_entry
+                    pos.stop, pos.extreme_close, pos.atr_at_entry, d
                 )
 
             # ---- mark to market ----
-            position_value = sum(
-                pos.quantity * float(bars[s]["Close"])
-                for s, pos in open_positions.items()
-                if s in bars
-            ) + sum(  # symbols without a bar today: value at entry price
-                pos.quantity * pos.entry_price
-                for s, pos in open_positions.items()
-                if s not in bars
-            )
-            equity = cash + position_value
+            def total_position_value() -> float:
+                return sum(
+                    mark_value(pos, float(bars[s]["Close"]) if s in bars else pos.entry_price)
+                    for s, pos in open_positions.items()
+                )
 
-            # ---- entries: rank all qualifying candidates by score ----
+            equity = cash + total_position_value()
+
+            # ---- entries: rank all qualifying candidates by |score| ----
+            # risk-on regime: longs only; risk-off: shorts only (if enabled);
+            # no regime series provided: both directions always allowed.
+            risk_on = bool(regime.loc[date])
+            longs_ok = risk_on
+            shorts_ok = st.allow_short and (not risk_on or regime_ok is None)
             candidates = []
-            if not bool(regime.loc[date]):
-                bars_for_entry = {}  # risk-off: manage exits only
-            else:
-                bars_for_entry = bars
-            for symbol, bar in bars_for_entry.items():
+            for symbol, bar in bars.items():
                 if symbol in open_positions:
                     continue
                 if bar_i - last_exit_bar.get(symbol, -(10**9)) <= st.reentry_cooldown_bars:
@@ -233,19 +256,28 @@ class BacktestEngine:
                 sig, atr_val = bar["signal"], bar["atr"]
                 if np.isnan(sig) or np.isnan(atr_val) or atr_val <= 0:
                     continue
-                if sig >= st.min_entry_score:
-                    candidates.append((float(sig), symbol, float(bar["Open"]), float(atr_val)))
+                if longs_ok and sig >= st.min_entry_score:
+                    candidates.append(
+                        (abs(float(sig)), symbol, float(bar["Open"]), float(atr_val), 1)
+                    )
+                elif shorts_ok and sig <= -st.min_entry_score:
+                    candidates.append(
+                        (abs(float(sig)), symbol, float(bar["Open"]), float(atr_val), -1)
+                    )
             candidates.sort(reverse=True)
 
-            for sig, symbol, open_px, atr_val in candidates:
-                exposure = equity - cash
-                ok, _ = self.risk.can_open_new(len(open_positions), exposure, equity)
+            for _, symbol, open_px, atr_val, d in candidates:
+                exposure = sum(
+                    pos.entry_price * pos.quantity for pos in open_positions.values()
+                )
+                ok, _why = self.risk.can_open_new(len(open_positions), exposure, equity)
                 if not ok:
                     break
-                fill = open_px * (1.0 + slip)
+                fill = open_px * (1.0 + d * slip)  # buy higher, sell-short lower
                 qty = self.risk.position_size(equity, cash, fill, atr_val)
                 if qty <= 0:
                     continue
+                # both directions reserve collateral equal to notional + fee
                 cost = fill * qty * (1.0 + fee)
                 if cost > cash:
                     continue
@@ -257,19 +289,15 @@ class BacktestEngine:
                     entry_price=fill,
                     entry_cost=cost,
                     entry_date=date,
-                    stop=self.risk.stop_loss_price(fill, atr_val),
-                    take_profit=self.risk.take_profit_price(fill, atr_val),
-                    highest_close=max(fill, close),
+                    stop=self.risk.stop_loss_price(fill, atr_val, d),
+                    take_profit=self.risk.take_profit_price(fill, atr_val, d),
+                    extreme_close=max(fill, close) if d > 0 else min(fill, close),
                     atr_at_entry=atr_val,
+                    direction=d,
                 )
 
             # re-mark after entries
-            position_value = sum(
-                pos.quantity * float(bars[s]["Close"]) if s in bars
-                else pos.quantity * pos.entry_price
-                for s, pos in open_positions.items()
-            )
-            equity_points.append((date, cash + position_value))
+            equity_points.append((date, cash + total_position_value()))
 
         # liquidate remaining positions at final close for clean accounting
         final_date = all_dates[-1]

@@ -27,10 +27,12 @@ class PaperBroker(Broker):
         price_lookup: PriceLookup,
         initial_cash: float = 10_000.0,
         ledger_path: str | Path = "paper_ledger.json",
+        allow_short: bool = False,
     ):
         self.price_lookup = price_lookup
         self.ledger_path = Path(ledger_path)
         self.cash = initial_cash
+        self.supports_short = allow_short
         self._positions: dict[str, BrokerPosition] = {}
         self._load()
 
@@ -78,6 +80,8 @@ class PaperBroker(Broker):
         return float(price)
 
     def account(self) -> AccountSnapshot:
+        # cash + sum(qty * price) is correct for shorts too: negative quantity
+        # times a falling price adds equity.
         value = 0.0
         for symbol, pos in self._positions.items():
             price = self.price_lookup(symbol)
@@ -86,7 +90,27 @@ class PaperBroker(Broker):
         return AccountSnapshot(equity=self.cash + value, cash=self.cash)
 
     def positions(self) -> dict[str, BrokerPosition]:
-        return {s: p for s, p in self._positions.items() if p.quantity > 0}
+        return {s: p for s, p in self._positions.items() if abs(p.quantity) > 1e-12}
+
+    def _apply_fill(self, symbol: str, signed_qty: float, price: float) -> None:
+        existing = self._positions.get(symbol)
+        if existing is None:
+            self._positions[symbol] = BrokerPosition(
+                symbol=symbol, quantity=signed_qty, average_price=price
+            )
+            return
+        new_qty = existing.quantity + signed_qty
+        if existing.quantity * signed_qty > 0:
+            # extending the position in the same direction: blend entry price
+            existing.average_price = (
+                existing.average_price * existing.quantity + price * signed_qty
+            ) / new_qty
+        elif existing.quantity * new_qty < 0:
+            # crossed through zero: remainder is a fresh position at this fill
+            existing.average_price = price
+        existing.quantity = new_qty
+        if abs(existing.quantity) <= 1e-12:
+            del self._positions[symbol]
 
     def buy_market(self, symbol: str, quantity: float) -> dict:
         quantity = abs(quantity)
@@ -97,30 +121,30 @@ class PaperBroker(Broker):
                 f"insufficient paper cash: need {cost:.2f}, have {self.cash:.2f}"
             )
         self.cash -= cost
-        existing = self._positions.get(symbol)
-        if existing:
-            total_qty = existing.quantity + quantity
-            existing.average_price = (
-                existing.average_price * existing.quantity + price * quantity
-            ) / total_qty
-            existing.quantity = total_qty
-        else:
-            self._positions[symbol] = BrokerPosition(
-                symbol=symbol, quantity=quantity, average_price=price
-            )
+        self._apply_fill(symbol, quantity, price)
         self._save()
         return {"paper": True, "symbol": symbol, "quantity": quantity, "fill": price}
 
     def sell_market(self, symbol: str, quantity: float) -> dict:
         quantity = abs(quantity)
         pos = self._positions.get(symbol)
-        if pos is None or pos.quantity <= 0:
-            raise BrokerError(f"no paper position in {symbol}")
-        quantity = min(quantity, pos.quantity)
+        held = pos.quantity if pos else 0.0
+        if not self.supports_short:
+            if held <= 0:
+                raise BrokerError(f"no paper position in {symbol}")
+            quantity = min(quantity, held)
+        elif held - quantity < 0:
+            # opening/extending a short: cap so the short's notional stays
+            # within available cash (fully collateralized simulation)
+            price = self._price(symbol)
+            short_notional = (quantity - max(held, 0.0)) * price
+            if short_notional > self.cash:
+                raise BrokerError(
+                    f"insufficient paper collateral to short {symbol}: "
+                    f"need {short_notional:.2f}, have {self.cash:.2f}"
+                )
         price = self._price(symbol)
         self.cash += price * quantity
-        pos.quantity -= quantity
-        if pos.quantity <= 1e-12:
-            del self._positions[symbol]
+        self._apply_fill(symbol, -quantity, price)
         self._save()
         return {"paper": True, "symbol": symbol, "quantity": -quantity, "fill": price}

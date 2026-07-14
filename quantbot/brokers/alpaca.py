@@ -21,6 +21,7 @@ BASE_URLS = {
 
 class AlpacaBroker(Broker):
     name = "alpaca"
+    supports_short = True  # sell-first shorts marginable US equities
 
     def __init__(
         self,

@@ -16,19 +16,22 @@ from pathlib import Path
 
 @dataclass
 class ManagedPosition:
-    ticker: str                 # Trading 212 ticker
+    ticker: str                 # broker symbol
     yahoo_symbol: str
-    quantity: float
+    quantity: float             # always positive; see direction
     entry_price: float
     entry_time: str             # ISO timestamp
     stop_price: float
     take_profit_price: float
-    highest_close: float        # for trailing stop
+    highest_close: float        # trailing-stop extreme: highest close since
+                                # entry for longs, LOWEST close for shorts
     atr_at_entry: float
+    direction: int = 1          # +1 long, -1 short
 
     @classmethod
     def from_dict(cls, d: dict) -> "ManagedPosition":
-        return cls(**{k: d[k] for k in cls.__dataclass_fields__})
+        # tolerate states written by older versions (missing new fields)
+        return cls(**{k: d[k] for k in cls.__dataclass_fields__ if k in d})
 
 
 @dataclass

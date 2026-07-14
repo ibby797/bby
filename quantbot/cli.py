@@ -109,8 +109,12 @@ def cmd_signals(cfg: Config, args) -> int:
         sig = strategy.generate(df)
         price = float(df["Close"].iloc[-1])
         atr_val = float(atr_indicator(df).iloc[-1])
+        direction = 1
         if sig.score >= cfg.strategy.min_entry_score:
             action = "BUY"
+        elif cfg.strategy.allow_short and sig.score <= -cfg.strategy.min_entry_score:
+            action = "SHORT"  # only on brokers that support shorting
+            direction = -1
         elif sig.score <= cfg.strategy.exit_score:
             action = "SELL"
         else:
@@ -122,8 +126,12 @@ def cmd_signals(cfg: Config, args) -> int:
             "score": round(sig.score, 4),
             "price": round(price, 4),
             "atr": round(atr_val, 4),
-            "suggested_stop": round(risk.stop_loss_price(price, atr_val), 4),
-            "suggested_take_profit": round(risk.take_profit_price(price, atr_val), 4),
+            "suggested_stop": round(
+                risk.stop_loss_price(price, atr_val, direction), 4
+            ),
+            "suggested_take_profit": round(
+                risk.take_profit_price(price, atr_val, direction), 4
+            ),
             "suggested_quantity": risk.position_size(
                 args.equity, args.equity, price, atr_val
             ),
@@ -203,6 +211,7 @@ def cmd_backtest(cfg: Config, args) -> int:
             initial_cash=args.cash,
             min_entry_score=cfg.strategy.min_entry_score,
             exit_score=cfg.strategy.exit_score,
+            allow_short=cfg.strategy.allow_short,
         ),
     )
     result = engine.run(data, regime_ok=regime_ok)
@@ -210,7 +219,8 @@ def cmd_backtest(cfg: Config, args) -> int:
     if args.trades:
         print("\nTrades:")
         for t in result.trades:
-            print(f"  {t.symbol:<8} {t.entry_date.date()} -> {t.exit_date.date()} "
+            side = "LONG " if t.direction > 0 else "SHORT"
+            print(f"  {side} {t.symbol:<8} {t.entry_date.date()} -> {t.exit_date.date()} "
                   f"qty={t.quantity:g} {t.entry_price:.2f} -> {t.exit_price:.2f} "
                   f"pnl={t.pnl:+.2f} ({t.exit_reason})")
     if args.report:

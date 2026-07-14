@@ -64,6 +64,35 @@ def test_paper_ledger_persists(tmp_path, prices):
     assert b2.positions()["AAPL"].quantity == 3
 
 
+def test_paper_short_requires_flag(broker):
+    with pytest.raises(BrokerError, match="no paper position"):
+        broker.sell_market("AAPL", 5)  # allow_short defaults to False
+
+
+def test_paper_short_and_cover(tmp_path, prices):
+    b = PaperBroker(prices, initial_cash=10_000.0,
+                    ledger_path=tmp_path / "l.json", allow_short=True)
+    b.sell_market("AAPL", 10)  # short 10 @ 200
+    assert b.positions()["AAPL"].quantity == -10
+    assert b.cash == pytest.approx(12_000.0)  # proceeds credited
+    assert b.account().equity == pytest.approx(10_000.0)  # 12000 + (-10*200)
+
+    # price falls: the short gains
+    b.price_lookup = lambda s: 150.0
+    assert b.account().equity == pytest.approx(10_500.0)
+
+    b.buy_market("AAPL", 10)  # cover at 150
+    assert b.positions() == {}
+    assert b.cash == pytest.approx(10_500.0)
+
+
+def test_paper_short_collateral_capped(tmp_path, prices):
+    b = PaperBroker(prices, initial_cash=1_000.0,
+                    ledger_path=tmp_path / "l.json", allow_short=True)
+    with pytest.raises(BrokerError, match="collateral"):
+        b.sell_market("AAPL", 100)  # 20k notional short vs 1k cash
+
+
 def test_factory_builds_paper(tmp_path, monkeypatch):
     monkeypatch.setenv("T212_API_KEY", "x")
     cfg = Config.load(None)

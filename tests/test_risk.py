@@ -41,11 +41,27 @@ def test_stops_and_take_profit(rm):
 
 def test_trailing_stop_only_ratchets_up(rm):
     stop = rm.stop_loss_price(100.0, 2.0)  # 95
-    raised = rm.updated_trailing_stop(stop, highest_close=110.0, atr_value=2.0)
+    raised = rm.updated_trailing_stop(stop, extreme_close=110.0, atr_value=2.0)
     assert raised == pytest.approx(105.0)
     # price falls back: stop must NOT move down
-    unchanged = rm.updated_trailing_stop(raised, highest_close=100.0, atr_value=2.0)
+    unchanged = rm.updated_trailing_stop(raised, extreme_close=100.0, atr_value=2.0)
     assert unchanged == raised
+
+
+def test_short_stops_are_mirrored(rm):
+    # short entered at 100 with ATR 2: stop ABOVE at 105, take-profit BELOW at 90
+    assert rm.stop_loss_price(100.0, 2.0, direction=-1) == pytest.approx(105.0)
+    assert rm.take_profit_price(100.0, 2.0, direction=-1) == pytest.approx(90.0)
+
+
+def test_short_trailing_stop_only_ratchets_down(rm):
+    stop = rm.stop_loss_price(100.0, 2.0, direction=-1)  # 105
+    # price falls to 90: stop trails down to 95
+    lowered = rm.updated_trailing_stop(stop, extreme_close=90.0, atr_value=2.0, direction=-1)
+    assert lowered == pytest.approx(95.0)
+    # price bounces back up: stop must NOT move back up
+    unchanged = rm.updated_trailing_stop(lowered, extreme_close=100.0, atr_value=2.0, direction=-1)
+    assert unchanged == lowered
 
 
 def test_daily_loss_kill_switch(rm):

@@ -175,6 +175,85 @@ def test_regime_filter_fails_open_without_data(cfg):
     assert allowed and "fail-open" in reason
 
 
+def test_short_entry_on_downtrend(cfg):
+    cfg.strategy.allow_short = True
+    broker = FakeBroker()
+    broker.supports_short = True
+    bot = make_bot(cfg, broker, {"UP": trending_up(300), "DOWN": trending_down(300)})
+    bot.run_once()
+    shorts = [o for o in broker.orders if o["symbol"] == "DOWN_US_EQ" and o["quantity"] < 0]
+    assert len(shorts) == 1
+    pos = bot.state.positions["DOWN_US_EQ"]
+    assert pos.direction == -1
+    # short stops mirror: stop above entry, take-profit below
+    assert pos.stop_price > pos.entry_price > pos.take_profit_price
+
+
+def test_no_short_on_unsupporting_broker(cfg):
+    cfg.strategy.allow_short = True
+    broker = FakeBroker()  # supports_short = False (like Trading 212)
+    bot = make_bot(cfg, broker, {"DOWN": trending_down(300)})
+    bot.run_once()
+    assert broker.orders == []  # wanted to short, broker can't, so nothing
+    assert bot.state.positions == {}
+
+
+def test_short_stop_triggers_cover(cfg):
+    cfg.strategy.allow_short = True
+    up = trending_up(300)  # price has rallied against the short
+    price_now = float(up["Close"].iloc[-1])
+    broker = FakeBroker(
+        equity=10_000.0,
+        cash=11_000.0,
+        portfolio={
+            "UP_US_EQ": BrokerPosition(
+                symbol="UP_US_EQ", quantity=-10.0, average_price=price_now * 0.8
+            )
+        },
+    )
+    broker.supports_short = True
+    bot = make_bot(cfg, broker, {"UP": up})
+    bot.state.positions["UP_US_EQ"] = ManagedPosition(
+        ticker="UP_US_EQ",
+        yahoo_symbol="UP",
+        quantity=10.0,
+        entry_price=price_now * 0.8,
+        entry_time="2026-07-01T14:30:00+00:00",
+        stop_price=price_now * 0.9,  # already breached (price above stop)
+        take_profit_price=price_now * 0.5,
+        highest_close=price_now * 0.8,
+        atr_at_entry=price_now * 0.02,
+        direction=-1,
+    )
+    bot.run_once()
+    covers = [o for o in broker.orders if o["symbol"] == "UP_US_EQ" and o["quantity"] > 0]
+    assert len(covers) == 1 and covers[0]["quantity"] == 10.0
+    assert "UP_US_EQ" not in bot.state.positions
+
+
+def test_adopts_external_short_position(cfg):
+    cfg.strategy.allow_short = True
+    down = trending_down(300)
+    price_now = float(down["Close"].iloc[-1])
+    broker = FakeBroker(
+        equity=10_000.0,
+        cash=11_000.0,
+        portfolio={
+            "DOWN_US_EQ": BrokerPosition(
+                # entered just above current price: no stop/take-profit fires,
+                # so the adopted position must survive the exit pass
+                symbol="DOWN_US_EQ", quantity=-5.0, average_price=price_now * 1.02
+            )
+        },
+    )
+    broker.supports_short = True
+    bot = make_bot(cfg, broker, {"DOWN": down}, dry_run=True)
+    bot.run_once()
+    pos = bot.state.positions.get("DOWN_US_EQ")
+    assert pos is not None and pos.direction == -1 and pos.quantity == 5.0
+    assert pos.stop_price > pos.entry_price  # short stop sits above
+
+
 def test_market_hours_helper():
     import datetime as dt
 

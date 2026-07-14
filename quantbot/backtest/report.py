@@ -84,6 +84,7 @@ def render_html(result: BacktestResult, title: str = "quantbot backtest report")
 
     trade_rows = "".join(
         f"<tr><td>{html.escape(t.symbol)}</td>"
+        f"<td>{'long' if t.direction > 0 else 'short'}</td>"
         f"<td>{t.entry_date.date()}</td><td>{t.exit_date.date()}</td>"
         f"<td>{t.quantity:g}</td><td>{t.entry_price:.2f}</td>"
         f"<td>{t.exit_price:.2f}</td>"
@@ -125,7 +126,7 @@ def render_html(result: BacktestResult, title: str = "quantbot backtest report")
 <h2>Trades ({len(result.trades)}{", first 500 shown" if len(result.trades) > 500 else ""})</h2>
 <div class="tablewrap">
 <table>
-<tr><th>Symbol</th><th>Entry</th><th>Exit</th><th>Qty</th><th>Entry px</th>
+<tr><th>Symbol</th><th>Side</th><th>Entry</th><th>Exit</th><th>Qty</th><th>Entry px</th>
 <th>Exit px</th><th>PnL</th><th>Reason</th></tr>
 {trade_rows}
 </table>

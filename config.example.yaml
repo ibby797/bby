@@ -67,6 +67,12 @@ strategy:
   min_entry_score: 0.25
   # ...and to force-close one.
   exit_score: -0.25
+  # Short selling: score <= -min_entry_score opens a short; score >= +0.25
+  # covers it. Only works on brokers that can short (alpaca, paper) — Trading
+  # 212 Invest/ISA and spot crypto are long-only and ignore this. When the
+  # regime filter is on, shorts only open in risk-off markets. Shorts have
+  # UNLIMITED theoretical loss — leave this off unless you know what it means.
+  allow_short: false
   # Relative weights of the six models. Trend/momentum carry full weight;
   # mean-reversion gets half weight so it tempers entries without vetoing
   # trends; volume confirmation sits in between.
