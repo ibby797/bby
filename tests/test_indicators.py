@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from t212bot import indicators as ind
+from quantbot import indicators as ind
 from tests.helpers import trending_up
 
 

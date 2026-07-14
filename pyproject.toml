@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quantbot"
+version = "2.0.0"
+description = "Broker-agnostic multi-strategy systematic trading bot (Trading 212, Alpaca, CCXT crypto exchanges, built-in paper broker). No strategy guarantees profits; trade at your own risk."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "requests>=2.31",
+    "pandas>=2.0",
+    "numpy>=1.24",
+    "PyYAML>=6.0",
+    "yfinance>=0.2.40",
+]
+
+[project.optional-dependencies]
+crypto = ["ccxt>=4.0"]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+quantbot = "quantbot.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["quantbot*"]

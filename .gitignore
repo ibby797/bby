@@ -5,6 +5,10 @@ config.yaml
 
 # Runtime state
 state.json
+paper_ledger.json
+signals.json
+signals.csv
+report.html
 *.log
 logs/
 

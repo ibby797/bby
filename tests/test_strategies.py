@@ -1,11 +1,12 @@
 import pandas as pd
 import pytest
 
-from t212bot.strategies import (
+from quantbot.strategies import (
     BollingerReversion,
     DonchianBreakout,
     EnsembleStrategy,
     MacdMomentum,
+    ObvTrend,
     RsiReversion,
     SmaCrossover,
     build_default_ensemble,
@@ -18,6 +19,7 @@ ALL_STRATEGIES = [
     MacdMomentum(),
     BollingerReversion(),
     DonchianBreakout(),
+    ObvTrend(),
 ]
 
 
@@ -35,6 +37,11 @@ def test_trend_strategies_like_uptrends():
     for strategy in (SmaCrossover(), DonchianBreakout(), MacdMomentum()):
         assert strategy.signal_series(up).dropna().tail(50).mean() > 0.2
         assert strategy.signal_series(down).dropna().tail(50).mean() < -0.2
+
+
+def test_obv_confirms_direction():
+    assert ObvTrend().signal_series(trending_up(300)).dropna().tail(50).mean() > 0.2
+    assert ObvTrend().signal_series(trending_down(300)).dropna().tail(50).mean() < -0.2
 
 
 def test_rsi_reversion_fades_trends():
@@ -65,9 +72,9 @@ def test_ensemble_zero_weights_rejected():
         EnsembleStrategy([SmaCrossover()], weights={"sma_crossover": 0.0})
 
 
-def test_default_ensemble_has_five_members():
+def test_default_ensemble_has_six_members():
     ens = build_default_ensemble()
-    assert len(ens.members) == 5
+    assert len(ens.members) == 6
     sig = ens.generate(trending_up(300))
     assert -1.0 <= sig.score <= 1.0
     assert "ensemble" in sig.reason

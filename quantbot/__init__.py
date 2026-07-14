@@ -1,4 +1,4 @@
-"""t212bot — systematic multi-strategy trading bot for the Trading 212 public API.
+"""quantbot — systematic multi-strategy trading bot for the Trading 212 public API.
 
 IMPORTANT: Trading involves substantial risk of loss. No strategy, however
 sophisticated, can guarantee profits. Always validate on the demo environment

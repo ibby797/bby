@@ -1,6 +1,6 @@
 import pytest
 
-from t212bot.risk.manager import RiskConfig, RiskManager
+from quantbot.risk.manager import RiskConfig, RiskManager
 
 
 @pytest.fixture()

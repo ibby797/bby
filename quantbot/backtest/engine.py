@@ -100,7 +100,18 @@ class BacktestEngine:
         self.risk = RiskManager(risk_config or RiskConfig())
         self.settings = settings or BacktestSettings()
 
-    def run(self, data: dict[str, pd.DataFrame]) -> BacktestResult:
+    def run(
+        self,
+        data: dict[str, pd.DataFrame],
+        regime_ok: pd.Series | None = None,
+    ) -> BacktestResult:
+        """Run the backtest.
+
+        ``regime_ok``: optional boolean series (indexed by date). On dates
+        where it is False, no NEW entries are made (exits keep working) —
+        mirrors the live bot's market-regime filter. It is shifted by one bar
+        internally so the regime decision uses yesterday's benchmark close.
+        """
         if not data:
             raise ValueError("no data supplied to backtest")
         st = self.settings
@@ -120,6 +131,18 @@ class BacktestEngine:
             raise ValueError("all supplied data frames were empty/too short")
 
         all_dates = sorted(set().union(*[set(f.index) for f in frames.values()]))
+
+        if regime_ok is not None:
+            regime = (
+                regime_ok.astype(bool)
+                .shift(1)                       # decided on yesterday's close
+                .reindex(pd.DatetimeIndex(all_dates))
+                .ffill()
+                .fillna(True)                   # fail-open before data starts
+            )
+        else:
+            regime = pd.Series(True, index=pd.DatetimeIndex(all_dates))
+
         cash = st.initial_cash
         open_positions: dict[str, _OpenPosition] = {}
         last_exit_bar: dict[str, int] = {}
@@ -198,7 +221,11 @@ class BacktestEngine:
 
             # ---- entries: rank all qualifying candidates by score ----
             candidates = []
-            for symbol, bar in bars.items():
+            if not bool(regime.loc[date]):
+                bars_for_entry = {}  # risk-off: manage exits only
+            else:
+                bars_for_entry = bars
+            for symbol, bar in bars_for_entry.items():
                 if symbol in open_positions:
                     continue
                 if bar_i - last_exit_bar.get(symbol, -(10**9)) <= st.reentry_cooldown_bars:

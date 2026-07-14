@@ -1,0 +1,17 @@
+# Run the bot anywhere Docker runs:
+#   cp config.example.yaml config.yaml   # edit; set state_path: /app/state/state.json
+#   echo "T212_API_KEY=..." > .env       # broker secrets
+#   docker compose up -d --build
+#   docker compose logs -f
+services:
+  quantbot:
+    build: .
+    env_file: .env
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - quantbot-state:/app/state
+    command: ["--config", "/app/config.yaml", "run"]
+    restart: unless-stopped
+
+volumes:
+  quantbot-state:

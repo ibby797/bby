@@ -1,7 +1,7 @@
 import pytest
 
-from t212bot.config import Config, LIVE_CONFIRMATION_PHRASE
-from t212bot.state import BotState, ManagedPosition, load_state, save_state
+from quantbot.config import Config, LIVE_CONFIRMATION_PHRASE
+from quantbot.state import BotState, ManagedPosition, load_state, save_state
 
 
 def test_defaults_are_safe(tmp_path, monkeypatch):
@@ -19,8 +19,70 @@ def test_live_without_confirmation_rejected(tmp_path, monkeypatch):
     monkeypatch.delenv("T212_DRY_RUN", raising=False)
     path = tmp_path / "config.yaml"
     path.write_text("environment: live\ndry_run: false\n")
-    with pytest.raises(ValueError, match="Refusing live trading"):
+    with pytest.raises(ValueError, match="Refusing real-money trading"):
         Config.load(path)
+
+
+def test_alpaca_live_requires_confirmation(tmp_path, monkeypatch):
+    monkeypatch.delenv("QUANTBOT_DRY_RUN", raising=False)
+    monkeypatch.delenv("T212_DRY_RUN", raising=False)
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "broker: alpaca\ndry_run: false\nbrokers:\n  alpaca:\n    paper: false\n"
+    )
+    with pytest.raises(ValueError, match="Refusing real-money trading"):
+        Config.load(path)
+
+
+def test_ccxt_always_real_money_unless_sandbox(tmp_path, monkeypatch):
+    monkeypatch.delenv("QUANTBOT_DRY_RUN", raising=False)
+    monkeypatch.delenv("T212_DRY_RUN", raising=False)
+    path = tmp_path / "config.yaml"
+    path.write_text("broker: ccxt\ndry_run: false\n")
+    with pytest.raises(ValueError, match="Refusing real-money trading"):
+        Config.load(path)
+    path.write_text(
+        "broker: ccxt\ndry_run: false\nbrokers:\n  ccxt:\n    sandbox: true\n"
+    )
+    cfg = Config.load(path)  # sandbox = no confirmation needed
+    assert cfg.is_real_money() is False
+
+
+def test_paper_broker_never_needs_confirmation(tmp_path, monkeypatch):
+    monkeypatch.delenv("QUANTBOT_DRY_RUN", raising=False)
+    monkeypatch.delenv("T212_DRY_RUN", raising=False)
+    path = tmp_path / "config.yaml"
+    path.write_text("broker: paper\ndry_run: false\n")
+    cfg = Config.load(path)
+    assert cfg.broker.kind == "paper" and cfg.is_real_money() is False
+
+
+def test_broker_and_regime_parsing(tmp_path, monkeypatch):
+    monkeypatch.delenv("QUANTBOT_BROKER", raising=False)
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        """
+broker: ccxt
+brokers:
+  ccxt:
+    exchange: kraken
+    quote: usd
+    sandbox: true
+  paper:
+    initial_cash: 5000
+regime:
+  enabled: true
+  symbol: QQQ
+  sma_window: 100
+"""
+    )
+    cfg = Config.load(path)
+    assert cfg.broker.kind == "ccxt"
+    assert cfg.broker.ccxt_exchange == "kraken"
+    assert cfg.broker.ccxt_quote == "USD"
+    assert cfg.broker.paper_initial_cash == 5000.0
+    assert cfg.regime.enabled and cfg.regime.symbol == "QQQ"
+    assert cfg.regime.sma_window == 100
 
 
 def test_live_with_confirmation_accepted(tmp_path, monkeypatch):

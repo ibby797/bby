@@ -2,10 +2,10 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from t212bot.backtest.engine import BacktestEngine, BacktestSettings
-from t212bot.backtest import metrics
-from t212bot.risk.manager import RiskConfig
-from t212bot.strategies import SmaCrossover, build_default_ensemble
+from quantbot.backtest.engine import BacktestEngine, BacktestSettings
+from quantbot.backtest import metrics
+from quantbot.risk.manager import RiskConfig
+from quantbot.strategies import SmaCrossover, build_default_ensemble
 from tests.helpers import trending_down, trending_up, sideways
 
 
@@ -96,3 +96,44 @@ def test_metrics_sane():
 def test_summary_contains_disclaimer():
     result = run_engine({"UP": trending_up(300)})
     assert "does not guarantee" in result.summary()
+
+
+def test_regime_filter_all_off_means_no_trades():
+    data = {"UP": trending_up(300)}
+    regime = pd.Series(False, index=data["UP"].index)
+    engine = BacktestEngine(
+        strategy=build_default_ensemble(),
+        risk_config=RiskConfig(max_drawdown_pct=100.0),
+        settings=BacktestSettings(),
+    )
+    result = engine.run(data, regime_ok=regime)
+    assert result.stats["trades"] == 0
+    assert result.stats["final_equity"] == pytest.approx(10_000.0)
+
+
+def test_regime_filter_on_equals_no_filter():
+    data = {"UP": trending_up(300)}
+    regime = pd.Series(True, index=data["UP"].index)
+    with_filter = run_engine(data)
+    engine = BacktestEngine(
+        strategy=build_default_ensemble(),
+        risk_config=RiskConfig(max_drawdown_pct=100.0),
+        settings=BacktestSettings(),
+    )
+    all_on = engine.run(data, regime_ok=regime)
+    assert all_on.stats["final_equity"] == pytest.approx(
+        with_filter.stats["final_equity"]
+    )
+
+
+def test_html_report_renders(tmp_path):
+    from quantbot.backtest.report import render_html, write_report
+
+    result = run_engine({"UP": trending_up(300)})
+    html_text = render_html(result)
+    assert "<svg" in html_text
+    assert "Sharpe" in html_text
+    assert "does not guarantee" in html_text
+    out = tmp_path / "report.html"
+    write_report(result, str(out))
+    assert out.read_text().startswith("<!DOCTYPE html>")

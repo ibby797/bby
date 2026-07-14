@@ -1,15 +1,35 @@
-# t212bot configuration.
-# Copy to config.yaml (gitignored) and adjust. The API key belongs in the
-# T212_API_KEY environment variable, NOT in this file.
+# quantbot configuration.
+# Copy to config.yaml (gitignored) and adjust. Secrets belong in environment
+# variables, NOT in this file:
+#   Trading 212:  T212_API_KEY
+#   Alpaca:       APCA_API_KEY_ID + APCA_API_SECRET_KEY
+#   CCXT crypto:  CCXT_API_KEY + CCXT_SECRET
 
-# "demo" = Trading 212 paper-trading environment (recommended), "live" = real money.
+# Which venue to trade through: trading212 | alpaca | ccxt | paper
+# "paper" is the built-in local simulator — works with no account at all.
+broker: trading212
+
+# Broker-specific settings (only the active broker's section matters).
+brokers:
+  alpaca:
+    paper: true          # false = live Alpaca account (real money)
+  ccxt:
+    exchange: binance    # any ccxt exchange id: kraken, coinbase, bybit, okx...
+    quote: USDT          # quote currency balances are measured in
+    sandbox: false       # true = exchange testnet where supported
+  paper:
+    initial_cash: 10000
+    ledger_path: paper_ledger.json
+
+# Trading 212 only: "demo" = paper environment (recommended), "live" = real money.
 environment: demo
 
 # true = log every order instead of sending it. Set false only after you have
 # watched the bot's decisions and are happy with them.
 dry_run: true
 
-# Required ONLY for live trading with dry_run false. Type the phrase exactly:
+# Required ONLY for real-money trading with dry_run false (T212 live, Alpaca
+# live, or CCXT without sandbox). Type the phrase exactly:
 # confirm_live: I_UNDERSTAND_REAL_MONEY_IS_AT_RISK
 confirm_live: ""
 
@@ -19,8 +39,10 @@ webhook_url: ""
 state_path: state.json
 
 universe:
-  # Trading 212 ticker -> Yahoo Finance symbol.
-  # Find exact T212 tickers with: python run_bot.py instruments --search apple
+  # Broker symbol -> Yahoo Finance data symbol.
+  #   Trading 212: AAPL_US_EQ: AAPL   (find tickers: run_bot.py instruments --search apple)
+  #   Alpaca:      AAPL: AAPL
+  #   CCXT crypto: BTC/USDT: BTC-USD  (also set schedule.market_hours_only: false)
   instruments:
     AAPL_US_EQ: AAPL
     MSFT_US_EQ: MSFT
@@ -33,19 +55,28 @@ universe:
     V_US_EQ: V
     JNJ_US_EQ: JNJ
 
+# Market-regime filter: block NEW entries while the benchmark trades below its
+# long moving average (exits keep working). Cheap, powerful drawdown reducer.
+regime:
+  enabled: true
+  symbol: SPY
+  sma_window: 200
+
 strategy:
   # Ensemble score in [-1, 1] required to open a position...
   min_entry_score: 0.25
   # ...and to force-close one.
   exit_score: -0.25
-  # Relative weights of the five models. Trend/momentum carry full weight;
-  # mean-reversion gets half weight so it tempers entries without vetoing trends.
+  # Relative weights of the six models. Trend/momentum carry full weight;
+  # mean-reversion gets half weight so it tempers entries without vetoing
+  # trends; volume confirmation sits in between.
   weights:
     sma_crossover: 1.0
     donchian_breakout: 1.0
     macd_momentum: 1.0
     rsi_reversion: 0.5
     bollinger_reversion: 0.5
+    obv_trend: 0.75
 
 data:
   interval: 1d          # yfinance interval: 1d, 1h, 30m...
@@ -68,4 +99,4 @@ risk:
 
 schedule:
   poll_seconds: 300
-  market_hours_only: true
+  market_hours_only: true   # set false for 24/7 markets (crypto via ccxt)

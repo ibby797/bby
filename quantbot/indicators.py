@@ -88,3 +88,9 @@ def donchian(df: pd.DataFrame, window: int = 20) -> pd.DataFrame:
 def annualized_volatility(close: pd.Series, window: int = 20, periods_per_year: int = 252) -> pd.Series:
     rets = close.pct_change()
     return rets.rolling(window, min_periods=window).std(ddof=0) * np.sqrt(periods_per_year)
+
+
+def obv(df: pd.DataFrame) -> pd.Series:
+    """On-Balance Volume: cumulative volume signed by the day's close direction."""
+    direction = np.sign(df["Close"].diff()).fillna(0.0)
+    return (direction * df["Volume"]).cumsum()

@@ -16,6 +16,7 @@ from .base import Signal, Strategy
 from .bollinger_reversion import BollingerReversion
 from .donchian_breakout import DonchianBreakout
 from .macd_momentum import MacdMomentum
+from .obv_trend import ObvTrend
 from .rsi_reversion import RsiReversion
 from .sma_crossover import SmaCrossover
 
@@ -55,18 +56,21 @@ class EnsembleStrategy(Strategy):
 
 # Trend/momentum models carry full weight; the two mean-reversion models get
 # half weight so they temper entries at stretched prices without being able to
-# fully veto a strong trend (they vote against it by construction).
+# fully veto a strong trend (they vote against it by construction). Volume
+# confirmation gets 0.75 — supporting evidence, not a primary driver.
 DEFAULT_WEIGHTS = {
     "sma_crossover": 1.0,
     "donchian_breakout": 1.0,
     "macd_momentum": 1.0,
     "rsi_reversion": 0.5,
     "bollinger_reversion": 0.5,
+    "obv_trend": 0.75,
 }
 
 
 def build_default_ensemble(weights: Mapping[str, float] | None = None) -> EnsembleStrategy:
-    """The standard five-model ensemble: two trend, one momentum, two reversion."""
+    """The standard six-model ensemble: two trend, one momentum, two reversion,
+    one volume confirmation."""
     merged = dict(DEFAULT_WEIGHTS)
     merged.update(weights or {})
     return EnsembleStrategy(
@@ -76,6 +80,7 @@ def build_default_ensemble(weights: Mapping[str, float] | None = None) -> Ensemb
             MacdMomentum(),
             RsiReversion(),
             BollingerReversion(),
+            ObvTrend(),
         ],
         weights=merged,
     )

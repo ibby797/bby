@@ -3,29 +3,36 @@
 import pandas as pd
 import pytest
 
-from t212bot.bot import TradingBot, us_market_open_now
-from t212bot.config import Config
-from t212bot.state import ManagedPosition
+from quantbot.bot import TradingBot, us_market_open_now
+from quantbot.brokers.base import AccountSnapshot, Broker, BrokerPosition
+from quantbot.config import Config
+from quantbot.state import ManagedPosition
 from tests.helpers import trending_up, trending_down
 
 
-class FakeClient:
-    environment = "demo"
+class FakeBroker(Broker):
+    name = "fake"
+    real_money = False
 
-    def __init__(self, cash=None, portfolio=None):
-        self.cash = cash or {"free": 10_000.0, "invested": 0.0, "total": 10_000.0}
-        self.portfolio = portfolio or []
+    def __init__(self, equity=10_000.0, cash=10_000.0, portfolio=None):
+        self.equity = equity
+        self.cash = cash
+        self.portfolio = portfolio or {}
         self.orders = []
 
-    def get_account_cash(self):
-        return self.cash
+    def account(self):
+        return AccountSnapshot(equity=self.equity, cash=self.cash)
 
-    def get_portfolio(self):
-        return self.portfolio
+    def positions(self):
+        return dict(self.portfolio)
 
-    def place_market_order(self, ticker, quantity):
-        self.orders.append({"ticker": ticker, "quantity": quantity})
-        return {"id": len(self.orders), "ticker": ticker, "quantity": quantity}
+    def buy_market(self, symbol, quantity):
+        self.orders.append({"symbol": symbol, "quantity": quantity})
+        return {"symbol": symbol, "quantity": quantity}
+
+    def sell_market(self, symbol, quantity):
+        self.orders.append({"symbol": symbol, "quantity": -abs(quantity)})
+        return {"symbol": symbol, "quantity": -abs(quantity)}
 
 
 class FakeData:
@@ -35,56 +42,66 @@ class FakeData:
     def history(self, symbol):
         return self.frames.get(symbol, pd.DataFrame())
 
+    def latest_price(self, symbol):
+        df = self.history(symbol)
+        return float(df["Close"].iloc[-1]) if len(df) else None
+
 
 @pytest.fixture()
 def cfg(tmp_path, monkeypatch):
     monkeypatch.setenv("T212_API_KEY", "test-key")
-    monkeypatch.delenv("T212_ENV", raising=False)
-    monkeypatch.delenv("T212_DRY_RUN", raising=False)
+    for var in ("T212_ENV", "T212_DRY_RUN", "QUANTBOT_ENV", "QUANTBOT_DRY_RUN",
+                "QUANTBOT_BROKER"):
+        monkeypatch.delenv(var, raising=False)
     config = Config.load(None)
     config.state_path = str(tmp_path / "state.json")
     config.instruments = {"UP_US_EQ": "UP", "DOWN_US_EQ": "DOWN"}
     return config
 
 
-def make_bot(cfg, client, frames, dry_run=False):
+def make_bot(cfg, broker, frames, dry_run=False):
     cfg.dry_run = dry_run
     bot = TradingBot(cfg)
-    bot.client = client
-    bot.executor.client = client
+    bot.broker = broker
+    bot.executor.broker = broker
     bot.executor.dry_run = dry_run
     bot.data = FakeData(frames)
     return bot
 
 
 def test_cycle_buys_uptrend_not_downtrend(cfg):
-    client = FakeClient()
-    bot = make_bot(cfg, client, {"UP": trending_up(300), "DOWN": trending_down(300)})
+    broker = FakeBroker()
+    bot = make_bot(cfg, broker, {"UP": trending_up(300), "DOWN": trending_down(300)})
     bot.run_once()
-    tickers_bought = {o["ticker"] for o in client.orders}
-    assert "UP_US_EQ" in tickers_bought
-    assert "DOWN_US_EQ" not in tickers_bought
+    symbols_bought = {o["symbol"] for o in broker.orders}
+    assert "UP_US_EQ" in symbols_bought
+    assert "DOWN_US_EQ" not in symbols_bought
     assert "UP_US_EQ" in bot.state.positions
     pos = bot.state.positions["UP_US_EQ"]
     assert pos.stop_price < pos.entry_price < pos.take_profit_price
 
 
 def test_dry_run_never_calls_broker(cfg):
-    client = FakeClient()
-    bot = make_bot(cfg, client, {"UP": trending_up(300)}, dry_run=True)
+    broker = FakeBroker()
+    bot = make_bot(cfg, broker, {"UP": trending_up(300)}, dry_run=True)
     bot.run_once()
-    assert client.orders == []  # decisions logged, nothing sent
+    assert broker.orders == []  # decisions logged, nothing sent
     assert "UP_US_EQ" in bot.state.positions  # but tracked for inspection
 
 
 def test_stop_loss_triggers_market_sell(cfg):
     up = trending_up(300)
     price_now = float(up["Close"].iloc[-1])
-    client = FakeClient(
-        cash={"free": 5_000.0, "invested": 5_000.0, "total": 10_000.0},
-        portfolio=[{"ticker": "UP_US_EQ", "quantity": 10.0, "averagePrice": price_now}],
+    broker = FakeBroker(
+        equity=10_000.0,
+        cash=5_000.0,
+        portfolio={
+            "UP_US_EQ": BrokerPosition(
+                symbol="UP_US_EQ", quantity=10.0, average_price=price_now
+            )
+        },
     )
-    bot = make_bot(cfg, client, {"UP": up})
+    bot = make_bot(cfg, broker, {"UP": up})
     bot.state.positions["UP_US_EQ"] = ManagedPosition(
         ticker="UP_US_EQ",
         yahoo_symbol="UP",
@@ -97,25 +114,27 @@ def test_stop_loss_triggers_market_sell(cfg):
         atr_at_entry=price_now * 0.02,
     )
     bot.run_once()
-    sells = [o for o in client.orders if o["ticker"] == "UP_US_EQ" and o["quantity"] < 0]
+    sells = [o for o in broker.orders if o["symbol"] == "UP_US_EQ" and o["quantity"] < 0]
     assert len(sells) == 1 and sells[0]["quantity"] == -10.0
     assert "UP_US_EQ" not in bot.state.positions
+    # whipsaw guard: the exit started a re-entry cooldown
+    assert "UP_US_EQ" in bot.state.cooldowns
 
 
 def test_daily_loss_halts_new_entries(cfg):
-    client = FakeClient(cash={"free": 9_600.0, "invested": 0.0, "total": 9_600.0})
-    bot = make_bot(cfg, client, {"UP": trending_up(300)})
+    broker = FakeBroker(equity=9_600.0, cash=9_600.0)
+    bot = make_bot(cfg, broker, {"UP": trending_up(300)})
     bot.state.day_date = pd.Timestamp.today().date().isoformat()
     bot.state.day_start_equity = 10_000.0  # -4% today >= 3% limit
     bot.state.peak_equity = 10_000.0
     bot.run_once()
-    assert client.orders == []
+    assert broker.orders == []
     assert bot.state.halted
 
 
 def test_reconcile_drops_externally_closed_position(cfg):
-    client = FakeClient()  # empty portfolio
-    bot = make_bot(cfg, client, {"UP": trending_up(300)}, dry_run=True)
+    broker = FakeBroker()  # empty portfolio
+    bot = make_bot(cfg, broker, {"UP": trending_up(300)}, dry_run=True)
     bot.state.positions["GONE_US_EQ"] = ManagedPosition(
         ticker="GONE_US_EQ", yahoo_symbol="GONE", quantity=1.0, entry_price=10.0,
         entry_time="t", stop_price=9.0, take_profit_price=12.0,
@@ -123,6 +142,37 @@ def test_reconcile_drops_externally_closed_position(cfg):
     )
     bot.run_once()
     assert "GONE_US_EQ" not in bot.state.positions
+
+
+def test_regime_filter_blocks_entries(cfg):
+    cfg.regime.enabled = True
+    cfg.regime.symbol = "BENCH"
+    cfg.regime.sma_window = 50
+    broker = FakeBroker()
+    # strong universe uptrend, but the benchmark is in a downtrend => risk-off
+    bot = make_bot(cfg, broker, {"UP": trending_up(300), "BENCH": trending_down(300)})
+    bot.run_once()
+    assert broker.orders == []
+    assert bot.state.positions == {}
+
+
+def test_regime_filter_allows_when_benchmark_strong(cfg):
+    cfg.regime.enabled = True
+    cfg.regime.symbol = "BENCH"
+    cfg.regime.sma_window = 50
+    broker = FakeBroker()
+    bot = make_bot(cfg, broker, {"UP": trending_up(300), "BENCH": trending_up(300)})
+    bot.run_once()
+    assert any(o["quantity"] > 0 for o in broker.orders)
+
+
+def test_regime_filter_fails_open_without_data(cfg):
+    cfg.regime.enabled = True
+    cfg.regime.symbol = "MISSING"
+    broker = FakeBroker()
+    bot = make_bot(cfg, broker, {"UP": trending_up(300)})
+    allowed, reason = bot.regime_allows_entries()
+    assert allowed and "fail-open" in reason
 
 
 def test_market_hours_helper():

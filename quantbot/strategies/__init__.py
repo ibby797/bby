@@ -6,7 +6,8 @@ from .rsi_reversion import RsiReversion
 from .macd_momentum import MacdMomentum
 from .bollinger_reversion import BollingerReversion
 from .donchian_breakout import DonchianBreakout
-from .ensemble import EnsembleStrategy, build_default_ensemble
+from .obv_trend import ObvTrend
+from .ensemble import DEFAULT_WEIGHTS, EnsembleStrategy, build_default_ensemble
 
 __all__ = [
     "Signal",
@@ -16,6 +17,8 @@ __all__ = [
     "MacdMomentum",
     "BollingerReversion",
     "DonchianBreakout",
+    "ObvTrend",
+    "DEFAULT_WEIGHTS",
     "EnsembleStrategy",
     "build_default_ensemble",
 ]
