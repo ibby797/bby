@@ -90,8 +90,36 @@ def test_can_open_new_gates(rm):
     assert not ok and "exposure" in why
 
 
+def test_partial_tp_price_is_half_distance(rm):
+    # tp_mult 5, ATR 2 -> full TP at +10, partial at +5 (long) / -5 (short)
+    assert rm.partial_tp_price(100.0, 2.0) == pytest.approx(105.0)
+    assert rm.partial_tp_price(100.0, 2.0, direction=-1) == pytest.approx(95.0)
+
+
+def test_breakeven_stop_moves_to_entry_after_1r(rm):
+    # entry 100, ATR 2 -> initial risk 5. Below +1R: stop unchanged.
+    stop = rm.stop_loss_price(100.0, 2.0)  # 95
+    assert rm.breakeven_stop(stop, 100.0, extreme_close=103.0, atr_value=2.0) == stop
+    # at/above +1R (105): stop jumps to entry
+    assert rm.breakeven_stop(stop, 100.0, extreme_close=105.0, atr_value=2.0) == 100.0
+    # never moves adversely: if trailing already pushed above entry, keep it
+    assert rm.breakeven_stop(102.0, 100.0, extreme_close=110.0, atr_value=2.0) == 102.0
+
+
+def test_breakeven_stop_short_mirrored(rm):
+    stop = rm.stop_loss_price(100.0, 2.0, direction=-1)  # 105
+    moved = rm.breakeven_stop(stop, 100.0, extreme_close=95.0, atr_value=2.0, direction=-1)
+    assert moved == 100.0
+    disabled = RiskManager(RiskConfig(breakeven_at_r=0.0))
+    assert disabled.breakeven_stop(stop, 100.0, 95.0, 2.0, direction=-1) == stop
+
+
 def test_config_validation():
     with pytest.raises(ValueError):
         RiskConfig(risk_per_trade_pct=50.0).validate()
     with pytest.raises(ValueError):
         RiskConfig(max_open_positions=0).validate()
+    with pytest.raises(ValueError):
+        RiskConfig(partial_tp_fraction=1.0).validate()
+    with pytest.raises(ValueError):
+        RiskConfig(breakeven_at_r=-1.0).validate()

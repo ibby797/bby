@@ -27,6 +27,8 @@ class ManagedPosition:
                                 # entry for longs, LOWEST close for shorts
     atr_at_entry: float
     direction: int = 1          # +1 long, -1 short
+    partial_tp_price: float = 0.0  # first target (0 = compute lazily)
+    partial_taken: bool = False
 
     @classmethod
     def from_dict(cls, d: dict) -> "ManagedPosition":

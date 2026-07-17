@@ -102,9 +102,35 @@ understand and accept that.
 - **Hard caps** — max position value, max open positions, max total exposure,
   minimum cash buffer.
 - **Protective exits** — ATR stop-loss/take-profit, ratchet-only trailing stop.
+- **Breakeven stop** — once a trade is +1R in profit the stop moves to entry:
+  trades that were winners can no longer become full losers.
+- **Partial profit-taking** — half the position banks at the first target
+  (half the take-profit distance); the rest rides the trailing stop. Raises
+  win rate and smooths the equity curve at the cost of capping part of each
+  big winner.
+- **Time exit** — positions going nowhere for 45 days are closed; dead
+  capital blocks better entries.
 - **Re-entry cooldown** and **market-regime filter** (see above).
 - **Kill switches** — max daily loss halts entries; max drawdown from peak
   halts everything and liquidates.
+
+### Measuring what helps: `optimize`
+
+"More wins" claims are cheap; evidence is not. `quantbot optimize` grid-searches
+the key parameters (entry threshold, stop and take-profit multiples) with a
+**train/test split**: combinations are tuned on the first ~70% of history and
+judged on the untouched remainder — the same idea as
+[walk-forward analysis](https://en.wikipedia.org/wiki/Walk_forward_optimization),
+the standard defense against overfitting. A parameter set that shines in train
+and collapses in test is a mirage; the report shows both columns so you can
+tell. Note that **win rate is not the goal** — a 95% win rate with one
+catastrophic loser is worse than 45% with big winners. Judge by expectancy,
+Sharpe, and max drawdown.
+
+```bash
+python run_bot.py optimize --days 1095            # 3y of data, default grid
+python run_bot.py optimize --csv-dir ./data --metric expectancy
+```
 
 **Why software stops?** Market orders are the only order type every venue
 supports (and the only type Trading 212's live API accepts), so the bot keeps

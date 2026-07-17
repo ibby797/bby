@@ -35,6 +35,17 @@ class RiskConfig:
     max_drawdown_pct: float = 15.0         # global halt + liquidation flag
     quantity_decimals: int = 4             # T212 supports fractional shares
     reentry_cooldown_hours: float = 24.0   # whipsaw guard after any exit
+    # --- win-rate / capital-efficiency refinements ---
+    # Move the stop to entry once the trade is this many R (initial risk
+    # units) in profit: losers that were winners become scratches. 0 = off.
+    breakeven_at_r: float = 1.0
+    # Sell this fraction at HALF the take-profit distance, let the rest run
+    # with the trailing stop: banks wins earlier (higher win rate, smoother
+    # equity) at the cost of capping part of each big winner. 0 = off.
+    partial_tp_fraction: float = 0.5
+    # Close positions that have gone nowhere for this many days/bars — dead
+    # capital blocks better entries. 0 = off.
+    max_holding_days: int = 45
 
     def validate(self) -> None:
         if not 0 < self.risk_per_trade_pct <= 10:
@@ -47,6 +58,12 @@ class RiskConfig:
             raise ValueError("atr_stop_multiplier must be > 0")
         if self.reentry_cooldown_hours < 0:
             raise ValueError("reentry_cooldown_hours must be >= 0")
+        if self.breakeven_at_r < 0:
+            raise ValueError("breakeven_at_r must be >= 0")
+        if not 0 <= self.partial_tp_fraction < 1:
+            raise ValueError("partial_tp_fraction must be in [0, 1)")
+        if self.max_holding_days < 0:
+            raise ValueError("max_holding_days must be >= 0")
 
 
 @dataclass(frozen=True)
@@ -127,6 +144,35 @@ class RiskManager:
             return current_stop
         candidate = extreme_close - direction * self.config.atr_stop_multiplier * atr_value
         return max(current_stop, candidate) if direction > 0 else min(current_stop, candidate)
+
+    def partial_tp_price(
+        self, entry_price: float, atr_value: float, direction: int = 1
+    ) -> float:
+        """First profit target: half the full take-profit distance."""
+        half = self.config.atr_take_profit_multiplier / 2.0
+        return entry_price + direction * half * atr_value
+
+    def breakeven_stop(
+        self,
+        current_stop: float,
+        entry_price: float,
+        extreme_close: float,
+        atr_value: float,
+        direction: int = 1,
+    ) -> float:
+        """Move the stop to entry once the favorable excursion reaches
+        ``breakeven_at_r`` initial-risk units; never moves it adversely."""
+        if self.config.breakeven_at_r <= 0:
+            return current_stop
+        initial_risk = self.config.atr_stop_multiplier * atr_value
+        excursion = direction * (extreme_close - entry_price)
+        if excursion >= self.config.breakeven_at_r * initial_risk:
+            return (
+                max(current_stop, entry_price)
+                if direction > 0
+                else min(current_stop, entry_price)
+            )
+        return current_stop
 
     # ------------------------------------------------------ kill switches
 

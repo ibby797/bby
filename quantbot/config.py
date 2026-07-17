@@ -181,6 +181,9 @@ class Config:
             max_drawdown_pct=float(risk.get("max_drawdown_pct", 15.0)),
             quantity_decimals=int(risk.get("quantity_decimals", 4)),
             reentry_cooldown_hours=float(risk.get("reentry_cooldown_hours", 24.0)),
+            breakeven_at_r=float(risk.get("breakeven_at_r", 1.0)),
+            partial_tp_fraction=float(risk.get("partial_tp_fraction", 0.5)),
+            max_holding_days=int(risk.get("max_holding_days", 45)),
         )
 
         sched = raw.get("schedule") or {}

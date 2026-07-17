@@ -238,6 +238,43 @@ def _regime_series(benchmark_df, cfg: Config):
     return close >= sma(close, cfg.regime.sma_window)
 
 
+def cmd_optimize(cfg: Config, args) -> int:
+    """Grid-search parameters with a train/test split (overfitting-aware)."""
+    from .backtest.engine import BacktestSettings
+    from .backtest.optimize import format_results, grid_search
+    from .strategies import build_default_ensemble
+
+    if args.csv_dir:
+        from .data.market_data import load_csv_dir
+
+        data = load_csv_dir(args.csv_dir)
+    else:
+        from .data.market_data import MarketDataProvider
+
+        provider = MarketDataProvider(interval=cfg.data.interval, lookback_days=args.days)
+        data = provider.history_map(list(cfg.instruments.values()))
+    if not data:
+        print("No data available for the configured universe.", file=sys.stderr)
+        return 1
+
+    print(f"Optimizing over {len(data)} instruments "
+          f"(train {args.train_fraction:.0%} / test {1 - args.train_fraction:.0%})...\n")
+    results = grid_search(
+        strategy=build_default_ensemble(cfg.strategy.weights),
+        data=data,
+        risk_base=cfg.risk,
+        settings_base=BacktestSettings(
+            initial_cash=args.cash,
+            exit_score=cfg.strategy.exit_score,
+            allow_short=cfg.strategy.allow_short,
+        ),
+        train_fraction=args.train_fraction,
+        metric=args.metric,
+    )
+    print(format_results(results, metric=args.metric, top=args.top))
+    return 0
+
+
 def cmd_once(cfg: Config, _args) -> int:
     from .bot import TradingBot
 
@@ -280,6 +317,15 @@ def main(argv: list[str] | None = None) -> int:
     p_bt.add_argument("--trades", action="store_true", help="print every trade")
     p_bt.add_argument("--report", default="", help="write a self-contained HTML report")
 
+    p_opt = sub.add_parser("optimize", help="grid-search parameters (train/test split)")
+    p_opt.add_argument("--days", type=int, default=1095, help="history length to fetch")
+    p_opt.add_argument("--cash", type=float, default=10_000.0)
+    p_opt.add_argument("--csv-dir", default="", help="load OHLCV CSVs instead of Yahoo")
+    p_opt.add_argument("--train-fraction", type=float, default=0.7)
+    p_opt.add_argument("--metric", choices=["sharpe", "total_return_pct", "expectancy"],
+                       default="sharpe")
+    p_opt.add_argument("--top", type=int, default=10, help="rows to display")
+
     sub.add_parser("once", help="run one trading cycle")
     sub.add_parser("run", help="run the trading loop")
 
@@ -292,6 +338,7 @@ def main(argv: list[str] | None = None) -> int:
         "instruments": cmd_instruments,
         "signals": cmd_signals,
         "backtest": cmd_backtest,
+        "optimize": cmd_optimize,
         "once": cmd_once,
         "run": cmd_run,
     }

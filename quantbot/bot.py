@@ -223,6 +223,27 @@ class TradingBot:
                 continue
             price = float(df["Close"].iloc[-1])
 
+            # first target: bank a fraction, keep the rest running
+            fraction = self.config.risk.partial_tp_fraction
+            if fraction > 0 and not mp.partial_taken:
+                if mp.partial_tp_price <= 0:  # adopted/legacy position
+                    mp.partial_tp_price = self.risk.partial_tp_price(
+                        mp.entry_price, mp.atr_at_entry, d
+                    )
+                if (price - mp.partial_tp_price) * d >= 0:
+                    qty_out = mp.quantity * fraction
+                    result = (
+                        self.executor.sell_market(symbol, qty_out) if d > 0
+                        else self.executor.buy_market(symbol, qty_out)
+                    )
+                    if result is not None:
+                        mp.quantity -= qty_out
+                        mp.partial_taken = True
+                        self.notifier.send(
+                            f"PARTIAL {symbol} x{qty_out:g} @ ~{price:.2f} — "
+                            "first target hit, rest rides the trailing stop"
+                        )
+
             reason = None
             if force_liquidate:
                 reason = "drawdown kill switch liquidation"
@@ -230,6 +251,8 @@ class TradingBot:
                 reason = f"stop-loss hit (price {price:.2f} vs stop {mp.stop_price:.2f})"
             elif (price - mp.take_profit_price) * d >= 0:
                 reason = f"take-profit hit (price {price:.2f} vs tp {mp.take_profit_price:.2f})"
+            elif self._held_too_long(mp):
+                reason = f"time exit (> {self.config.risk.max_holding_days} days held)"
             else:
                 sig = self.strategy.generate(df)
                 # long closes on a sell signal; short covers on a buy signal
@@ -257,17 +280,32 @@ class TradingBot:
                     ).isoformat()
                 continue
 
-            # trailing stop maintenance (extreme = highest close for longs,
-            # lowest close for shorts; stop only ever moves in our favor)
+            # trailing + breakeven stop maintenance (extreme = highest close
+            # for longs, lowest for shorts; stop only ever moves in our favor)
             mp.highest_close = (
                 max(mp.highest_close, price) if d > 0 else min(mp.highest_close, price)
             )
             new_stop = self.risk.updated_trailing_stop(
                 mp.stop_price, mp.highest_close, mp.atr_at_entry, d
             )
+            new_stop = self.risk.breakeven_stop(
+                new_stop, mp.entry_price, mp.highest_close, mp.atr_at_entry, d
+            )
             if new_stop != mp.stop_price:
-                log.info("%s trailing stop %.2f -> %.2f", symbol, mp.stop_price, new_stop)
+                log.info("%s stop %.2f -> %.2f", symbol, mp.stop_price, new_stop)
                 mp.stop_price = new_stop
+
+    def _held_too_long(self, mp: ManagedPosition) -> bool:
+        max_days = self.config.risk.max_holding_days
+        if max_days <= 0:
+            return False
+        try:
+            entered = dt.datetime.fromisoformat(mp.entry_time)
+        except ValueError:
+            return False
+        if entered.tzinfo is None:
+            entered = entered.replace(tzinfo=dt.timezone.utc)
+        return dt.datetime.now(dt.timezone.utc) - entered >= dt.timedelta(days=max_days)
 
     # ---------------------------------------------------------- entries
 
@@ -391,6 +429,7 @@ class TradingBot:
                 highest_close=price,
                 atr_at_entry=atr_val,
                 direction=direction,
+                partial_tp_price=self.risk.partial_tp_price(price, atr_val, direction),
             )
             # both directions consume buying power / collateral
             free_cash -= qty * price

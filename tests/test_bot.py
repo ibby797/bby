@@ -254,6 +254,42 @@ def test_adopts_external_short_position(cfg):
     assert pos.stop_price > pos.entry_price  # short stop sits above
 
 
+def test_partial_take_profit_in_live_bot(cfg):
+    up = trending_up(300)
+    price_now = float(up["Close"].iloc[-1])
+    broker = FakeBroker(
+        equity=10_000.0,
+        cash=5_000.0,
+        portfolio={
+            "UP_US_EQ": BrokerPosition(
+                symbol="UP_US_EQ", quantity=10.0, average_price=price_now * 0.95
+            )
+        },
+    )
+    bot = make_bot(cfg, broker, {"UP": up})
+    bot.state.positions["UP_US_EQ"] = ManagedPosition(
+        ticker="UP_US_EQ",
+        yahoo_symbol="UP",
+        quantity=10.0,
+        entry_price=price_now * 0.95,
+        entry_time=pd.Timestamp.now("UTC").isoformat(),
+        stop_price=price_now * 0.5,        # far away: no full exit
+        take_profit_price=price_now * 3.0,
+        highest_close=price_now * 0.95,
+        atr_at_entry=price_now * 0.02,
+        partial_tp_price=price_now * 0.99,  # already crossed
+    )
+    bot.run_once()
+    partial_sells = [
+        o for o in broker.orders if o["symbol"] == "UP_US_EQ" and o["quantity"] < 0
+    ]
+    assert len(partial_sells) == 1
+    assert partial_sells[0]["quantity"] == pytest.approx(-5.0)  # half banked
+    pos = bot.state.positions["UP_US_EQ"]  # rest still riding
+    assert pos.quantity == pytest.approx(5.0)
+    assert pos.partial_taken is True
+
+
 def test_market_hours_helper():
     import datetime as dt
 

@@ -102,6 +102,10 @@ risk:
   max_drawdown_pct: 15.0           # halt + liquidate everything
   quantity_decimals: 4
   reentry_cooldown_hours: 24       # no re-entry into a ticker after an exit
+  # --- win-rate / capital-efficiency refinements ---
+  breakeven_at_r: 1.0              # stop -> entry once +1R in profit (0 = off)
+  partial_tp_fraction: 0.5         # bank half at the first target (0 = off)
+  max_holding_days: 45             # close stale going-nowhere positions (0 = off)
 
 schedule:
   poll_seconds: 300

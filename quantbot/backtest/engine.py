@@ -59,11 +59,14 @@ class _OpenPosition:
     entry_price: float
     entry_cost: float  # cash actually reserved, including fees
     entry_date: pd.Timestamp
+    entry_bar: int
     stop: float
     take_profit: float
+    partial_target: float
     extreme_close: float  # highest close for longs, lowest for shorts
     atr_at_entry: float
     direction: int = 1
+    partial_taken: bool = False
 
 
 @dataclass
@@ -186,6 +189,37 @@ class BacktestEngine:
                 )
             )
 
+        def take_partial(pos: _OpenPosition, symbol: str, date: pd.Timestamp, price: float):
+            """Sell/cover a fraction at the first target; the rest keeps running."""
+            nonlocal cash
+            fraction = self.risk.config.partial_tp_fraction
+            qty_out = pos.quantity * fraction
+            fill = price * (1.0 - pos.direction * slip)
+            entry_value_chunk = pos.entry_price * qty_out
+            returned = (
+                entry_value_chunk
+                + pos.direction * (fill * qty_out - entry_value_chunk)
+                - fill * qty_out * fee
+            )
+            cost_chunk = pos.entry_cost * fraction
+            cash += returned
+            trades.append(
+                Trade(
+                    symbol=symbol,
+                    entry_date=pos.entry_date,
+                    exit_date=date,
+                    entry_price=pos.entry_price,
+                    exit_price=fill,
+                    quantity=qty_out,
+                    pnl=returned - cost_chunk,
+                    exit_reason="partial_tp",
+                    direction=pos.direction,
+                )
+            )
+            pos.quantity -= qty_out
+            pos.entry_cost -= cost_chunk
+            pos.partial_taken = True
+
         for bar_i, date in enumerate(all_dates):
             bars = {
                 s: f.loc[date]
@@ -211,6 +245,17 @@ class BacktestEngine:
                 if ((low if d > 0 else high) - pos.stop) * d <= 0:
                     close_position(symbol, date, pos.stop, "stop_loss")
                     continue
+                # first target: bank a fraction, keep the rest running
+                if (
+                    not pos.partial_taken
+                    and self.risk.config.partial_tp_fraction > 0
+                    and ((high if d > 0 else low) - pos.partial_target) * d >= 0
+                ):
+                    fill = (
+                        max(open_px, pos.partial_target) if d > 0
+                        else min(open_px, pos.partial_target)
+                    )
+                    take_partial(pos, symbol, date, fill)
                 # favorable extreme reaches take-profit (long: high; short: low)
                 if ((high if d > 0 else low) - pos.take_profit) * d >= 0:
                     fill = max(open_px, pos.take_profit) if d > 0 else min(open_px, pos.take_profit)
@@ -224,12 +269,20 @@ class BacktestEngine:
                     if d < 0 and sig >= -st.exit_score:
                         close_position(symbol, date, open_px, "signal_cover")
                         continue
-                # trailing stop update from today's close
+                # stale position: capital is better deployed elsewhere
+                max_hold = self.risk.config.max_holding_days
+                if max_hold > 0 and bar_i - pos.entry_bar >= max_hold:
+                    close_position(symbol, date, open_px, "time_exit")
+                    continue
+                # trailing + breakeven stop updates from today's close
                 pos.extreme_close = (
                     max(pos.extreme_close, close) if d > 0 else min(pos.extreme_close, close)
                 )
                 pos.stop = self.risk.updated_trailing_stop(
                     pos.stop, pos.extreme_close, pos.atr_at_entry, d
+                )
+                pos.stop = self.risk.breakeven_stop(
+                    pos.stop, pos.entry_price, pos.extreme_close, pos.atr_at_entry, d
                 )
 
             # ---- mark to market ----
@@ -289,8 +342,10 @@ class BacktestEngine:
                     entry_price=fill,
                     entry_cost=cost,
                     entry_date=date,
+                    entry_bar=bar_i,
                     stop=self.risk.stop_loss_price(fill, atr_val, d),
                     take_profit=self.risk.take_profit_price(fill, atr_val, d),
+                    partial_target=self.risk.partial_tp_price(fill, atr_val, d),
                     extreme_close=max(fill, close) if d > 0 else min(fill, close),
                     atr_at_entry=atr_val,
                     direction=d,

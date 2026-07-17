@@ -178,6 +178,119 @@ def test_regime_gates_direction():
     assert len(result.trades) > 0
 
 
+class OneShot(SmaCrossover):
+    """Fires a full buy signal on exactly one bar, silent otherwise."""
+
+    name = "oneshot"
+
+    def __init__(self, fire_bar: int):
+        self.fire_bar = fire_bar
+
+    def signal_series(self, df):
+        s = pd.Series(0.0, index=df.index)
+        if len(s) > self.fire_bar:
+            s.iloc[self.fire_bar] = 1.0
+        return s
+
+
+def _spike_and_collapse():
+    # flat, rally past +1R, then collapse far below the original stop
+    closes = np.concatenate([
+        np.full(30, 100.0), np.linspace(100, 115, 10), np.linspace(115, 80, 20),
+    ])
+    from tests.helpers import make_ohlcv
+
+    return make_ohlcv(closes)
+
+
+def test_breakeven_stop_turns_loser_into_scratch():
+    def run(breakeven):
+        engine = BacktestEngine(
+            strategy=OneShot(30),
+            risk_config=RiskConfig(
+                max_drawdown_pct=100.0, trailing_stop=False,
+                partial_tp_fraction=0.0, breakeven_at_r=breakeven,
+                atr_take_profit_multiplier=50.0,  # TP out of reach
+            ),
+            settings=BacktestSettings(),
+        )
+        result = engine.run({"X": _spike_and_collapse()})
+        assert len(result.trades) == 1
+        return result.trades[0]
+
+    without = run(0.0)
+    with_be = run(1.0)
+    assert with_be.exit_price > without.exit_price  # stopped at entry, not below
+    assert with_be.pnl > without.pnl
+    assert with_be.exit_price == pytest.approx(with_be.entry_price, rel=0.02)
+
+
+def test_time_exit_closes_stale_positions():
+    closes = np.full(80, 100.0) + 0.1 * np.sin(np.arange(80))  # going nowhere
+    from tests.helpers import make_ohlcv
+
+    engine = BacktestEngine(
+        strategy=OneShot(30),
+        risk_config=RiskConfig(
+            max_drawdown_pct=100.0, partial_tp_fraction=0.0, max_holding_days=10,
+        ),
+        settings=BacktestSettings(),
+    )
+    result = engine.run({"X": make_ohlcv(closes)})
+    assert len(result.trades) == 1
+    assert result.trades[0].exit_reason == "time_exit"
+    assert (result.trades[0].exit_date - result.trades[0].entry_date).days <= 20
+
+
+def test_partial_tp_banks_and_lets_rest_run():
+    result = run_engine({"UP": trending_up(400)})
+    partials = [t for t in result.trades if t.exit_reason == "partial_tp"]
+    assert len(partials) > 0
+    assert all(t.pnl > 0 for t in partials)  # partials only fire in profit
+    # invariant already asserted elsewhere; sanity-check it here with partials
+    assert result.stats["final_equity"] == pytest.approx(
+        10_000.0 + sum(t.pnl for t in result.trades), rel=1e-9
+    )
+
+
+def test_partial_tp_raises_win_rate_on_choppy_trend():
+    data = {"UP": trending_up(400), "FLAT": sideways(400)}
+
+    def run(fraction):
+        engine = BacktestEngine(
+            strategy=build_default_ensemble(),
+            risk_config=RiskConfig(
+                max_drawdown_pct=100.0, partial_tp_fraction=fraction,
+            ),
+            settings=BacktestSettings(),
+        )
+        return engine.run(data).stats
+
+    with_partial = run(0.5)
+    without = run(0.0)
+    assert with_partial["win_rate_pct"] >= without["win_rate_pct"]
+
+
+def test_grid_search_train_test_split():
+    from quantbot.backtest.optimize import format_results, grid_search
+
+    data = {"UP": trending_up(400), "DOWN": trending_down(400)}
+    results = grid_search(
+        strategy=build_default_ensemble(),
+        data=data,
+        grid={"min_entry_score": [0.25], "atr_stop_multiplier": [2.0, 3.0]},
+        risk_base=RiskConfig(max_drawdown_pct=100.0),
+    )
+    assert len(results) == 2
+    for r in results:
+        assert "sharpe" in r.train and "sharpe" in r.test
+        assert r.params["atr_stop_multiplier"] in (2.0, 3.0)
+    # sorted by train sharpe descending
+    assert results[0].train["sharpe"] >= results[1].train["sharpe"]
+    table = format_results(results)
+    assert "TRAIN" in table and "overfitting" in table
+
+
 def test_html_report_renders(tmp_path):
     from quantbot.backtest.report import render_html, write_report
 
