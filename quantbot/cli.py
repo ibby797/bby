@@ -48,6 +48,67 @@ def _build_broker(cfg: Config):
     )
 
 
+def cmd_setup(cfg: Config, args) -> int:
+    """Interactive first-time setup: save the API key, verify the connection."""
+    from pathlib import Path
+
+    import yaml
+
+    from .api.client import Trading212APIError, Trading212Client
+
+    print("=" * 60)
+    print("quantbot setup — connect to Trading 212 (practice account)")
+    print("=" * 60)
+    print("Get a key in the Trading 212 app: switch to your PRACTICE")
+    print("account, then Settings -> API (Beta) -> Generate API key.\n")
+
+    key = (args.key or input("Paste your API key here and press Enter: ")).strip()
+    if not key:
+        print("No key entered — nothing saved. Run setup again when you have it.")
+        return 1
+
+    path = Path(args.config)
+    data: dict = {}
+    if path.exists():
+        with open(path) as fh:
+            data = yaml.safe_load(fh) or {}
+    data.setdefault("broker", "trading212")
+    data.setdefault("environment", "demo")   # practice environment
+    data.setdefault("dry_run", True)         # log orders, don't send them yet
+    api_section = data.get("api") or {}
+    api_section["key"] = key
+    data["api"] = api_section
+    with open(path, "w") as fh:
+        yaml.safe_dump(data, fh, sort_keys=False)
+    print(f"\nSaved to {path} (keep this file private — it contains your key;")
+    print("it is gitignored so it won't be uploaded anywhere).")
+
+    print("\nChecking the connection to Trading 212...")
+    try:
+        client = Trading212Client(key, str(data["environment"]), max_retries=0)
+        cash = client.get_account_cash()
+        print(f"CONNECTED — practice account total: {cash.get('total')} "
+              f"(free cash: {cash.get('free')})")
+    except Trading212APIError as exc:
+        if exc.status_code in (401, 403):
+            print("Trading 212 rejected the key. Most common causes:")
+            print("  - the key was generated in the REAL account instead of Practice")
+            print("    (practice keys only work with environment: demo)")
+            print("  - a typo/missing character when pasting")
+            print("Generate a fresh key in the Practice account and rerun setup.")
+        else:
+            print(f"Could not reach Trading 212 right now ({exc.message}).")
+            print("Your key is saved — test again later with: python run_bot.py account")
+
+    print("\nNext steps:")
+    print("  python run_bot.py account   # see your account through the bot")
+    print("  python run_bot.py signals   # what it would buy/sell right now")
+    print("  python run_bot.py run       # start the loop (dry-run: log only)")
+    print("When you're ready for practice trades: set dry_run: false in "
+          f"{path}")
+    return 0
+
+
 def cmd_account(cfg: Config, _args) -> int:
     broker = _build_broker(cfg)
     snap = broker.account()
@@ -299,6 +360,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("-v", "--verbose", action="store_true")
     sub = parser.add_subparsers(dest="command", required=True)
 
+    p_setup = sub.add_parser("setup", help="first-time setup: save API key, test connection")
+    p_setup.add_argument("--key", default="", help="API key (omit to be prompted)")
+
     sub.add_parser("account", help="show broker account and positions")
 
     p_inst = sub.add_parser("instruments", help="search Trading 212 instruments")
@@ -334,6 +398,7 @@ def main(argv: list[str] | None = None) -> int:
     cfg = Config.load(args.config)
 
     handlers = {
+        "setup": cmd_setup,
         "account": cmd_account,
         "instruments": cmd_instruments,
         "signals": cmd_signals,

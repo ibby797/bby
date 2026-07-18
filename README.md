@@ -174,7 +174,21 @@ docker compose up -d --build && docker compose logs -f
 Also pip-installable as a package: `pip install .` gives you a `quantbot`
 command.
 
-### Credentials (environment variables, never config files)
+### First-time Trading 212 connection (easiest way)
+
+```bash
+python run_bot.py setup
+```
+
+The wizard asks for your API key (Trading 212 app → switch to **Practice**
+account → Settings → API (Beta) → Generate), saves a safe default config
+(demo + dry-run), and immediately tests the connection. Then
+`python run_bot.py run` starts the bot.
+
+### Credentials (advanced: environment variables)
+
+Environment variables take precedence over the config file and keep keys out
+of files entirely — preferred for servers/Docker:
 
 | Broker | Variables |
 |---|---|
