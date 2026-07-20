@@ -1,0 +1,23 @@
+# Self-host ClipFarm as a website on any VPS:
+#   CLIPFARM_PASSWORD=yourpassword docker compose up -d --build
+# then point a reverse proxy (Caddy/nginx) with HTTPS at port 8000.
+services:
+  clipfarm:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - clipfarm-data:/data
+      # Optional: mount a YouTube cookies.txt (see README — cloud IPs get rate-limited)
+      # - ./cookies.txt:/data/cookies.txt:ro
+    environment:
+      CLIPFARM_PASSWORD: ${CLIPFARM_PASSWORD:?set CLIPFARM_PASSWORD before exposing this}
+      # CLIPFARM_COOKIES: /data/cookies.txt
+      # ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # TIKTOK_CLIENT_KEY: ${TIKTOK_CLIENT_KEY:-}
+      # TIKTOK_CLIENT_SECRET: ${TIKTOK_CLIENT_SECRET:-}
+      # TIKTOK_REDIRECT_URI: https://your-domain.com/api/tiktok/callback
+    restart: unless-stopped
+
+volumes:
+  clipfarm-data:

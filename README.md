@@ -311,3 +311,9 @@ push.
 - [Trading 212 API key help article](https://helpcentre.trading212.com/hc/en-us/articles/14584770928157-Trading-212-API-key)
 - [Alpaca API reference](https://docs.alpaca.markets/reference)
 - [CCXT documentation](https://docs.ccxt.com/)
+
+---
+
+## Other projects in this repo
+
+- **[clipfarm/](clipfarm/)** — 🎬 ClipFarm: paste a long-form YouTube video, auto-detect viral moments, batch-render up to 100 vertical captioned clips, and drip-post them to TikTok for content-rewards campaigns. See [clipfarm/README.md](clipfarm/README.md).
